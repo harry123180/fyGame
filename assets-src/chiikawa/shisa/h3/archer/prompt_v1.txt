@@ -1,0 +1,7 @@
+2D pixel art game sprite animation, fixed static camera, solid flat magenta (#FF00FF) background for the entire video. The same single character from the first frame: a round cream-white lion-dog (shisa) with a big curly orange swirl mane around its head, small round ears, tiny black dot eyes, pink blush, a tiny w-shaped mouth and a curly orange swirl tail at its back, wearing a dark green feathered hat, a brown quiver of arrows on its back, holding a wooden bow in its front hand, body turned sideways facing right. Always keep the curly orange mane and curly orange tail clearly visible. Keep the exact same character design, pixel art style, chunky black outlines, colors, size and position as the first frame.
+[0s-0.6s] The lion-dog reaches back with its free hand and pulls one arrow out of the quiver.
+[0.6s-1.3s] It nocks the arrow and draws the bowstring all the way back, bow raised forward toward the right, body leaning back, clear full-draw archery pose.
+[1.3s-1.8s] It releases: the arrow shoots off fast to the right and flies out of frame, bowstring snaps forward, small recoil.
+[1.8s-2.5s] It lowers the bow and returns to the relaxed standing pose of the first frame.
+Do not add any hat, clothing or accessory that is not in the first frame. No other characters, no text, no UI, no camera movement, no background change, no shadows on the background, background stays pure magenta.
+Audio: bowstring creak, quick twang and arrow whoosh, no music, no voice.

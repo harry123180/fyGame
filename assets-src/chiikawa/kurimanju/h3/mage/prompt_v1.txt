@@ -1,0 +1,7 @@
+2D pixel art game sprite animation, fixed static camera, solid flat magenta (#FF00FF) background for the entire video. The same single character from the first frame: a round beige-tan chestnut-bun creature (head and body one round ball) with a dark brown patch on the top of its head like a toasted bun top, tiny black dot eyes, pink blush and a tiny w-shaped mouth, wearing a dark navy blue pointed wizard hat, holding a short wooden magic wand topped with a yellow star in its front hand, body turned sideways facing right. Always keep the dark brown head patch and beige body clearly visible. Keep the exact same character design, pixel art style, chunky black outlines, colors, size and position as the first frame.
+[0s-0.6s] The bun creature raises the star wand high above its head.
+[0.6s-1.2s] It swings the wand forward toward the right in a strong casting motion, arm stretched out.
+[1.2s-1.9s] A bright burst of blue and white star-shaped sparkles and light explodes from the star tip of the wand toward the right; the magic light is only blue and white, never purple or pink.
+[1.9s-2.5s] The sparkles fade away and it lowers the wand, returning to the relaxed standing pose of the first frame.
+Do not add any hat, clothing or accessory that is not in the first frame. No other characters, no text, no UI, no camera movement, no background change, no shadows on the background, background stays pure magenta.
+Audio: magical chime whoosh and sparkling burst, no music, no voice.
