@@ -1,0 +1,7 @@
+實驗 B：/api/sprite/* （提示詞由伺服器自動組）
+B1：/api/sprite/anchor view=side dirs=["right"] weapon=bow style=pixel16 bg=green body=first_frame.png（36.5 秒）
+    → /api/sprite/generate_set anchors=[anchor job] motions=["shoot"] style=pixel16 bg=green quality=balanced seconds=3 768x768，look 見 B1_look.txt
+    → /api/sprite/sheet fps=12 cell=128 pixel=2 colors=64 format=zip
+    問題：定裝圖變成純側面、耳朵變白、臉部特徵消失；綠幕去背把深綠帽子吃成黑色；射兩次、側面/正面來回切換
+B2：跳過 anchor，直接 anchor_right=B2_anchor_blue.png（原待機格改藍底），bg=blue，其餘同上，look 見 B2_look.txt
+    比較用的 4 格取自 B2 影片 f013/f019/f036/f044，藍底轉洋紅後走 make_sprite
