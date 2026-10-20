@@ -8,3 +8,6 @@ __pycache__/
 data/
 server/data/
 assets-src/experiments/*/*_frames/
+assets-src/experiments/*/*_sheet/
+assets-src/experiments/*/*_mag/
+assets-src/experiments/*/*.zip
