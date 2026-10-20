@@ -171,3 +171,17 @@ body.typing #skills { display: none; }
 #ping { margin-left: 4px; color: #86efac; font-variant-numeric: tabular-nums; font-size: .9em; }
 #ping.meh { color: #fde047; }
 #ping.bad { color: #f87171; }
+
+/* 評分回饋 */
+#fbbtn { font-size: 12px; padding: 4px 10px; align-self: flex-start; }
+#feedback { position: fixed; inset: 0; background: rgba(2, 6, 23, .7); display: flex; align-items: center; justify-content: center; z-index: 11;
+  padding: calc(var(--sa-t) + 16px) calc(var(--sa-r) + 16px) calc(var(--sa-b) + 16px) calc(var(--sa-l) + 16px); }
+#fbbox { width: 100%; max-width: 420px; max-height: 100%; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; background: #111c38; border: 2px solid var(--accent); border-radius: 14px; padding: 14px; }
+#fbhead { display: flex; justify-content: space-between; align-items: center; font-size: 18px; }
+#fbhead button { padding: 6px 14px; }
+#fbstars { display: flex; justify-content: center; gap: 6px; }
+#fbstars button { width: 48px; height: 48px; padding: 0; background: transparent; border: 0; clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); background-color: #475569; }
+#fbstars button.on { background-color: var(--accent); }
+#fbbox label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
+#fbbox textarea { font-size: 16px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: #1e293b; color: var(--text); resize: vertical; font-family: inherit; user-select: text; -webkit-user-select: text; outline: none; }
+#fbbox textarea:focus { border-color: var(--accent); }

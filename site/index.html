@@ -26,6 +26,7 @@
         <div class="bar mp"><i id="mpfill"></i><span id="mptext"></span></div>
         <div class="bar xp"><i id="xpfill"></i><span id="xptext"></span></div>
         <div id="statstate"></div>
+        <button type="button" id="fbbtn">評分回饋</button>
       </div>
       <div id="chatlog"></div>
     </div>
@@ -54,6 +55,18 @@
   </div>
 
   <div id="marquee"></div>
+  <div id="feedback" hidden>
+    <form id="fbbox" autocomplete="off">
+      <div id="fbhead"><b>給這個遊戲打分數</b><button type="button" id="fbclose" class="ghost">關閉</button></div>
+      <div id="fbstars" role="radiogroup" aria-label="評分 1 到 5 星">
+        <button type="button" data-v="1" aria-label="1 星"></button><button type="button" data-v="2" aria-label="2 星"></button><button type="button" data-v="3" aria-label="3 星"></button><button type="button" data-v="4" aria-label="4 星"></button><button type="button" data-v="5" aria-label="5 星"></button>
+      </div>
+      <label>遊戲心得<textarea id="fbtext" maxlength="500" rows="3" placeholder="好玩嗎？哪裡卡卡的？"></textarea></label>
+      <label>你有什麼 idea？<textarea id="fbidea" maxlength="500" rows="3" placeholder="想要新角色、新 BOSS、新玩法…"></textarea></label>
+      <button type="submit">送出</button>
+    </form>
+  </div>
+
   <div id="banner" hidden></div>
   <div id="netmsg" hidden>連線中斷，重新連線中…</div>
   <div id="toast" hidden></div>

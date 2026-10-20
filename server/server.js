@@ -89,11 +89,11 @@ const BOSS = {
   name: '舞王', r: 60,
   hpBase: 2500, hpPerPlayer: 900,
   gapMs: 2600,                                   // 兩招之間的間隔，狂暴時 ×0.7
-  bear: { tele: 1300, radius: 260, dmg: 40 },    // 狗熊哆嗦毛：以自身為中心的震波
-  kick: { tele: 800, speed: 560, life: 1800, r: 18, dmg: 30, width: 36 }, // 浪子踢球：朝目標踢球
-  flash: { tele: 900, radius: 150, dmg: 45, reach: 600 },                 // 閃身步：瞬移到預警點並落地傷害
+  bear: { tele: 1550, radius: 260, dmg: 40 },    // 狗熊哆嗦毛：以自身為中心的震波
+  kick: { tele: 1050, speed: 560, life: 1800, r: 18, dmg: 30, width: 36 }, // 浪子踢球：朝目標踢球
+  flash: { tele: 1150, radius: 150, dmg: 45, reach: 600 },                 // 閃身步：瞬移到預警點並落地傷害
   enrageAt: 0.3, enrageDmg: 1.3,
-  respawnMs: 12000,
+  respawnMs: Number(process.env.BOSS_RESPAWN_MS) || 12000,
 };
 const BOSS_ANIMS = ['idle', 'flash', 'bear', 'kick'];
 
@@ -130,6 +130,18 @@ const server = http.createServer((req, res) => {
       res.writeHead(204, NO_CACHE); res.end();
     });
     return;
+  }
+  if (p === '/api/feedback') {
+    const rows = readFeedback();
+    const rated = rows.filter((r) => r.stars);
+    const dist = [1, 2, 3, 4, 5].map((n) => rated.filter((r) => r.stars === n).length);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...NO_CACHE });
+    return res.end(JSON.stringify({
+      count: rows.length, avg: rated.length ? +(rated.reduce((a, r) => a + r.stars, 0) / rated.length).toFixed(2) : null,
+      stars: { 1: dist[0], 2: dist[1], 3: dist[2], 4: dist[3], 5: dist[4] },
+      ideas: rows.filter((r) => r.idea).map((r) => ({ ts: r.ts, name: r.name, idea: r.idea })),
+      latest: rows.slice(-100).reverse(),
+    }, null, 1));
   }
   if (p === '/api/netstats') {
     const online = new Set([...players.values()].map((q) => nameKey(q.name)));
@@ -256,7 +268,17 @@ setInterval(() => {
   net.bytes = 0; net.skipped = 0; net.tickMax = 0; net.tickSum = 0; net.ticks = 0; net.driftMax = 0;
 }, 10000);
 const publicInfo = (p) => ({ id: p.id, name: p.name, hue: p.hue, cls: p.cls, char: p.char, lv: p.lv, maxHp: p.maxHp, maxMp: p.maxMp, x: Math.round(p.x), y: Math.round(p.y) });
-const power = (p) => (1 + lvMult.power * (p.lv - 1)) * (Date.now() < p.powerUntil ? POWERUP.power.mult : 1);
+const power = (p) => (1 + lvMult.power * (p.lv - 1)) * (Date.now() < p.powerUntil ? (p.powerMult ?? POWERUP.power.mult) : 1);
+
+// ---------- 等級追趕：比在線最高等級落後超過 3 等的人，經驗、道具、補血都有加成 ----------
+// 落後 4 等 ×1.15、5 等 ×1.3…每多 1 等 +15%，最高 ×2.5
+const CATCHUP = { freeGap: 3, perLv: 0.15, max: 2.5 };
+function catchupOf(p) {
+  let top = 0;
+  for (const q of players.values()) top = Math.max(top, q.lv);
+  const gap = top - p.lv;
+  return gap > CATCHUP.freeGap ? Math.min(CATCHUP.max, 1 + CATCHUP.perLv * (gap - CATCHUP.freeGap)) : 1;
+}
 
 // ---------- 關卡地圖：每輪 BOSS 換一張（html/maps/stages.json，前端讀同一份；改地圖不用重啟伺服器） ----------
 // 地形效果：speed＝速度倍率、slide＝冰面會滑、dps＝每秒扣血
@@ -272,7 +294,17 @@ const POWERUP = {
   max: 5, everyMs: 6000, r: 18,
 };
 const STAGES_FILE = path.join(HTML_DIR, 'maps', 'stages.json');
-let stages = [], stage = null, stageIdx = -1;
+let stages = [], stage = null, stageIdx = -1, stagesMtime = 0;
+// 地圖檔有更新（部署新地圖）就立刻套用到這一輪，不用等下一輪；改地圖存檔即生效
+setInterval(() => {
+  let m = 0;
+  try { m = fs.statSync(STAGES_FILE).mtimeMs; } catch {}
+  if (m && m !== stagesMtime) {
+    const first = !stagesMtime;
+    stagesMtime = m;
+    if (boss.level > 0 && !(first && stage)) { setStage(boss.level); console.log(`stages reloaded → ${stage?.id ?? '-'}`); }
+  }
+}, 3000);
 function loadStages() {
   try { stages = JSON.parse(fs.readFileSync(STAGES_FILE, 'utf8')).stages || []; } catch { stages = []; }
 }
@@ -320,10 +352,13 @@ function tickPowerups(now) {
     for (const p of players.values()) {
       if (p.dead || Math.hypot(p.x - u.x, p.y - u.y) > RADIUS + POWERUP.r) continue;
       powerups.delete(u.id);
-      if (u.kind === 'speed') p.speedUntil = now + POWERUP.speed.ms;
-      else p.powerUntil = now + POWERUP.power.ms;
+      const cu = catchupOf(p);
+      const def = POWERUP[u.kind];
+      const mult = +(1 + (def.mult - 1) * cu).toFixed(2), ms = Math.round(def.ms * cu);
+      if (u.kind === 'speed') { p.speedUntil = now + ms; p.speedMult = mult; }
+      else { p.powerUntil = now + ms; p.powerMult = mult; }
       fx.push({ k: 'pu-', id: u.id, by: p.id, kind: u.kind });
-      send(p.ws, { t: 'toast', msg: u.kind === 'speed' ? '加速！移動速度 ×1.5（8 秒）' : '力量提升！傷害 ×1.5（10 秒）' });
+      send(p.ws, { t: 'toast', speedMult: u.kind === 'speed' ? mult : undefined, msg: `${u.kind === 'speed' ? '加速！移動速度' : '力量提升！傷害'} ×${mult}（${Math.round(ms / 1000)} 秒）${cu > 1 ? '　追趕加成' : ''}` });
       break;
     }
   }
@@ -337,12 +372,12 @@ function applyLevel(p) {
 }
 
 function sendExp(p) {
-  send(p.ws, { t: 'exp', lv: p.lv, exp: Math.floor(p.exp), next: p.lv >= LV_MAX ? 0 : expToNext(p.lv) });
+  send(p.ws, { t: 'exp', lv: p.lv, exp: Math.floor(p.exp), next: p.lv >= LV_MAX ? 0 : expToNext(p.lv), catchup: +catchupOf(p).toFixed(2) });
 }
 
 function gainExp(p, n) {
   if (p.lv >= LV_MAX) return;
-  p.exp += n;
+  p.exp += n * catchupOf(p);
   let up = false;
   while (p.lv < LV_MAX && p.exp >= expToNext(p.lv)) {
     p.exp -= expToNext(p.lv);
@@ -417,7 +452,7 @@ function join(ws, msg) {
   sessions.set(key, { token, id: p.id });
   // 戰鬥中有新玩家加入（不是重連），BOSS 的 HP 跟著加，人多人少都打得夠久
   if (boss.alive && !prev && players.size > 1) {
-    const add = Math.round(BOSS.hpPerPlayer * (1 + 0.25 * (boss.level - 1)));
+    const add = Math.round(BOSS.hpPerPlayer * (1 + 0.25 * (boss.level - 1)) * (Number(process.env.BOSS_HP_SCALE) || 1));
     boss.maxHp += add; boss.hp += add;
   }
 
@@ -571,7 +606,7 @@ function statOf(p) {
 // by：施放治療的玩家（算進治療排行榜）；補血果實沒有 by
 function healP(p, amount, now, by) {
   if (p.dead) return;
-  const v = Math.min(p.maxHp - p.hp, Math.round(amount));
+  const v = Math.min(p.maxHp - p.hp, Math.round(amount * catchupOf(p)));
   if (v <= 0) return;
   p.hp += v;
   if (by) statOf(by).heal += v;
@@ -702,7 +737,7 @@ function spawnBoss() {
   boss.level++;
   setStage(boss.level);
   const n = Math.max(1, players.size);
-  boss.maxHp = Math.round((BOSS.hpBase + BOSS.hpPerPlayer * n) * (1 + 0.25 * (boss.level - 1)));
+  boss.maxHp = Math.max(1, Math.round((BOSS.hpBase + BOSS.hpPerPlayer * n) * (1 + 0.25 * (boss.level - 1)) * (Number(process.env.BOSS_HP_SCALE) || 1)));
   boss.hp = boss.maxHp;
   boss.x = CENTER.x; boss.y = CENTER.y;
   boss.alive = true;
@@ -910,6 +945,27 @@ function sendRank(p) {
   send(p.ws, { t: 'rank', total: top('total'), dmg: top('dmg'), heal: top('heal') });
 }
 
+// ---------- 評分回饋：1～5 星、心得、idea ----------
+const FEEDBACK_FILE = path.resolve('data', 'feedback.jsonl');
+function onFeedback(p, msg) {
+  const now = Date.now();
+  if (now - (p.lastFeedback || 0) < 15000) return send(p.ws, { t: 'toast', msg: '剛剛已經送出了，等一下再送' });
+  const stars = Math.round(Number(msg.stars));
+  const text = cleanText(msg.text, 500), idea = cleanText(msg.idea, 500);
+  if (!(stars >= 1 && stars <= 5) && !text && !idea) return send(p.ws, { t: 'toast', msg: '請先選星星或寫點東西' });
+  p.lastFeedback = now;
+  const row = { ts: new Date(now).toISOString(), name: p.name, cls: p.cls, char: p.char, lv: p.lv, stars: stars >= 1 && stars <= 5 ? stars : null, text, idea, round: boss.level, stage: stage?.id ?? null };
+  try {
+    fs.mkdirSync(path.dirname(FEEDBACK_FILE), { recursive: true });
+    fs.appendFileSync(FEEDBACK_FILE, JSON.stringify(row) + '\n');
+  } catch (e) { console.error('feedback:', e.message); }
+  console.log(`feedback ${p.name} ${row.stars ?? '-'}★ ${text.slice(0, 40)} | ${idea.slice(0, 40)}`);
+  send(p.ws, { t: 'feedbackok' });
+}
+function readFeedback() {
+  try { return fs.readFileSync(FEEDBACK_FILE, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; }
+}
+
 // ---------- 連線 ----------
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 4096 });
 wss.on('connection', (ws) => {
@@ -927,6 +983,7 @@ wss.on('connection', (ws) => {
     else if (msg.t === 'chat') chat(p, msg);
     else if (msg.t === 'rank') sendRank(p);
     else if (msg.t === 'ping') onPing(p, msg);
+    else if (msg.t === 'feedback') onFeedback(p, msg);
   });
   ws.on('close', (code) => {
     // 斷線紀錄：用來分辨是心跳逾時（手機在背景）、手機主動關閉、還是網路中斷
@@ -985,7 +1042,7 @@ setInterval(() => {
     } else {
       const ter = TERRAIN[terrainAt(p.x, p.y)];
       const speed = c.speed * (p.dead ? 0.5 : 1) * (buffOf(p)?.speed ?? 1)  // 倒地時可以慢慢走去找補師
-        * (ter?.speed ?? 1) * (now < p.speedUntil ? POWERUP.speed.mult : 1);
+        * (ter?.speed ?? 1) * (now < p.speedUntil ? (p.speedMult ?? POWERUP.speed.mult) : 1);
       // 冰面：速度慢慢跟上搖桿（會滑）；其他地面：馬上跟上
       const follow = ter?.slide ? 1 - Math.exp(-dt * 2.5) : 1;
       p.vx = (p.vx ?? 0) + (p.ix * speed - (p.vx ?? 0)) * follow;

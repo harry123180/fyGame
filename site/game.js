@@ -17,7 +17,8 @@ let CLASSES = null, CHARS = null, bossCfg = { name: 'BOSS', r: 60 };
 const players = new Map(); // id -> { id, name, hue, cls, x, y, tx, ty, hp, mp, flags, ... }
 const orbs = new Map();
 const xpOrbs = new Map();    // 經驗球
-let myExp = { lv: 1, exp: 0, next: 50 };
+let myExp = { lv: 1, exp: 0, next: 50, catchup: 1 };
+let mySpeedMult = 1.5;
 const balls = [];
 const effects = [];        // 畫面特效（預警、震波、投射物、傷害數字…）
 const boss = { x: 1200, y: 800, tx: 1200, ty: 800, hp: 0, maxHp: 1, level: 0, alive: false, anim: 0, animStart: 0 };
@@ -318,6 +319,11 @@ function handle(m) {
       break;
     case 'ver': if (myVer && m.v !== myVer) reloadForUpdate(); break;
     case 'kicked': kickedOut(m.msg); break;
+    case 'feedbackok':
+      $('feedback').hidden = true;
+      fbStars = 0; $('fbtext').value = ''; $('fbidea').value = ''; renderStars();
+      toast('謝謝你的回饋！');
+      break;
     case 'pong': myRtt = performance.now() - m.c; break;
     case 'welcome': {
       // 斷線重連時發現伺服器已經是新版（例如部署重啟），也要重新整理
@@ -350,7 +356,7 @@ function handle(m) {
     case 'leave': players.delete(m.id); updateOnline(); break;
     case 'chat': addChat(m, true); break;
     case 'cd': readyAt[m.k] = performance.now() + m.ms; cdTotal[m.k] = m.ms; break;
-    case 'toast': toast(m.msg); break;
+    case 'toast': toast(m.msg); if (m.speedMult) mySpeedMult = m.speedMult; break;
     case 'exp': myExp = m; break;
     case 'rank': rankData = m; renderRank(); break;
     case 's': {
@@ -405,7 +411,7 @@ function onFx(f, now) {
   const p = f.id != null ? players.get(f.id) : null;
   // 華麗特效（精靈圖）；原本的圓圈與線條保留，因為它們標示的是實際的判定範圍
   switch (f.k) {
-    case 'atk': if (p) castFx(p, f.s, now); break;
+    case 'atk': if (p && !(p.id === myId && now - (p.localAtkAt ?? 0) < 600)) castFx(p, f.s, now); break;
     case 'slash': {
       const flip = p ? p.x > f.x : false;
       spr('warrior', 0, f.x + (flip ? 30 : -30), f.y - 40, 160, 320, now, { flip });
@@ -437,7 +443,7 @@ function onFx(f, now) {
     case 'lv': if (p) spr('boss', 2, p.x, p.y + map.r + 6, 140, 900, now, { anchor: 'feet' }); break;
   }
   switch (f.k) {
-    case 'atk': if (p) { p.atkUntil = now + 400; p.face = boss.x < p.x ? -1 : 1; } break;
+    case 'atk': if (p) { if (!(p.id === myId && now - (p.localAtkAt ?? 0) < 600)) p.atkUntil = now + 400; p.face = boss.x < p.x ? -1 : 1; } break;
     case 'ball': balls.push({ ...f, born: now }); break;
     case 'orb+': orbs.set(f.id, f); break;
     case 'orb-': orbs.delete(f.id); break;
@@ -644,7 +650,7 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 // 電腦測試用：WASD／方向鍵移動，空白鍵或 J 普攻、K／L 技能
 const keys = new Set();
 window.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT' || e.isComposing) return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.isComposing) return;
   const k = e.key.toLowerCase();
   // 遊戲中按空白鍵／Enter 不能觸發畫面上（或隱藏的進場表單裡）有焦點的按鈕，否則會重新送出進場、看起來像被踢出去
   if (joined && (k === ' ' || k === 'enter')) e.preventDefault();
@@ -703,6 +709,12 @@ function castSkill(k) {
   const now = performance.now();
   if (!joined || ws?.readyState !== 1 || now < readyAt[k] || now < pendingUntil[k]) return;
   pendingUntil[k] = now + 250; // 等伺服器回 cd 之前先擋住連點
+  const me = players.get(myId), sk = CLASSES?.[me?.cls]?.skills[k];
+  if (me && sk && !(me.flags & 1) && me.mp >= sk.mp) {
+    me.atkUntil = now + 400;
+    castFx(me, k, now);
+    me.localAtkAt = now;   // 伺服器的 atk 事件晚點才到，到時候不要重播
+  }
   const [dx, dy] = moveDir();
   ws.send(JSON.stringify({ t: 'skill', k, dx: +dx.toFixed(2), dy: +dy.toFixed(2) }));
 }
@@ -721,6 +733,28 @@ for (const b of skillBtns) {
   b.addEventListener('pointercancel', up);
   b.addEventListener('pointerleave', up);
   b.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+// ---------- 評分回饋（1～5 星、心得、idea） ----------
+let fbStars = 0;
+function renderStars() {
+  for (const b of document.querySelectorAll('#fbstars button')) b.classList.toggle('on', Number(b.dataset.v) <= fbStars);
+}
+for (const b of document.querySelectorAll('#fbstars button')) b.addEventListener('click', () => { fbStars = Number(b.dataset.v); renderStars(); });
+$('fbbtn').addEventListener('click', (e) => { e.stopPropagation(); $('feedback').hidden = false; });
+$('fbclose').addEventListener('click', () => { $('feedback').hidden = true; });
+$('feedback').addEventListener('click', (e) => { if (e.target.id === 'feedback') $('feedback').hidden = true; });
+$('fbbox').addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (composing) return;
+  if (!fbStars && !$('fbtext').value.trim() && !$('fbidea').value.trim()) { toast('請先選星星或寫點東西'); return; }
+  if (ws?.readyState !== 1) { toast('連線中斷，等一下再送'); return; }
+  ws.send(JSON.stringify({ t: 'feedback', stars: fbStars, text: $('fbtext').value, idea: $('fbidea').value }));
+});
+// 中文輸入法選字中按 Enter 不要送出（textarea 本來就是換行，這裡只擋表單送出）
+for (const id of ['fbtext', 'fbidea']) {
+  $(id).addEventListener('compositionstart', () => { composing = true; });
+  $(id).addEventListener('compositionend', () => { setTimeout(() => { composing = false; }, 0); });
 }
 
 // ---------- 排行榜（點左上角頭像打開） ----------
@@ -807,6 +841,7 @@ function updateHud(now) {
   if (me.flags & 4) st.push('嘲諷中');
   if (me.flags & 16) st.push('加速中');
   if (me.flags & 32) st.push('力量提升');
+  if (myExp.catchup > 1) st.push(`追趕加成 ×${myExp.catchup}`);
   const ter = terrainAtClient(me.x, me.y);
   if (ter) st.push(`在${TERRAIN_NAME[ter] ?? ter}裡`);
   if (me.flags & 8) st.push('減傷');
@@ -1396,7 +1431,7 @@ function predictSelf(dt) {
   const c = CLASSES[me.cls];
   const r = topRank(myId);
   const ter = terrainFx[terrainAtClient(me.x, me.y)];
-  const speed = c.speed * (me.flags & 1 ? 0.5 : 1) * (r >= 0 ? topBuff[r].speed : 1) * (ter?.speed ?? 1) * (me.flags & 16 ? 1.5 : 1);
+  const speed = c.speed * (me.flags & 1 ? 0.5 : 1) * (r >= 0 ? topBuff[r].speed : 1) * (ter?.speed ?? 1) * (me.flags & 16 ? mySpeedMult : 1);
   const [ix, iy] = moveDir();
   me.x = Math.max(map.r, Math.min(map.w - map.r, me.x + ix * speed * dt));
   me.y = Math.max(map.r, Math.min(map.h - map.r, me.y + iy * speed * dt));
