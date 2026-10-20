@@ -15,6 +15,7 @@ ap.add_argument('src'); ap.add_argument('out')
 ap.add_argument('--cols', type=int, default=4); ap.add_argument('--rows', type=int, default=2)
 ap.add_argument('--px', type=int, default=32)
 ap.add_argument('--colors', type=int, default=24, help='整組影格共用的色盤大小')
+ap.add_argument('--align', choices=['feet', 'none'], default='feet', help='feet：角色腳底對齊；none：特效圖維持原位置不對齊')
 ap.add_argument('--key-dist', type=int, default=120, help='與洋紅的色差小於此值視為背景')
 a = ap.parse_args()
 
@@ -108,7 +109,7 @@ aligned = []
 base_y = N - 2
 for f in frames:
     bb = bbox(f)
-    if not bb:
+    if not bb or a.align == 'none':
         aligned.append(f); continue
     l, t, rr, b = bb
     bl, _, br, _ = body_bbox(f)

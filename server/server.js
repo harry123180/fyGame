@@ -132,6 +132,10 @@ setInterval(() => {
 // ---------- 遊戲狀態 ----------
 const players = new Map();   // id -> player
 const sessions = new Map();  // nameKey -> { token, id }
+// 斷線的玩家（手機鎖螢幕、切到背景、網路不穩）保留 30 分鐘：用同一個 token 回來就接回等級、經驗、血量、位置；
+// 這段期間 ID 也保留給原本的人
+const OFFLINE_KEEP_MS = 30 * 60 * 1000;
+const offline = new Map();   // nameKey -> { token, snap, until }
 // 排行榜：依 ID 累計對 BOSS 的傷害與治療量，離開再回來也不會歸零（伺服器重啟才清空）
 const stats = new Map();     // nameKey -> { name, cls, lv, dmg, heal }
 const RANK_TOP = 20;
@@ -217,17 +221,25 @@ function join(ws, msg) {
   if (players.size >= MAX_PLAYERS) return send(ws, { t: 'error', msg: '人數已滿' });
 
   const key = nameKey(name);
-  const sess = sessions.get(key);
-  let prev = null;
+  let sess = sessions.get(key);
+  let prev = null, back = false;
   if (sess) {
     if (sess.token !== msg.token) return send(ws, { t: 'error', msg: '這個 ID 已經有人用了，換一個吧' });
-    // 同一人斷線重連：踢掉舊連線，沿用位置與狀態（職業相同時）
+    // 同一人斷線重連（舊連線還沒被偵測到斷掉）：踢掉舊連線，沿用位置與狀態
     const old = players.get(sess.id);
     if (old) {
       prev = old;
       removePlayer(old, false);
       old.ws.terminate();
     }
+  } else {
+    const off = offline.get(key);
+    if (off && Date.now() < off.until) {
+      if (off.token !== msg.token) return send(ws, { t: 'error', msg: '這個 ID 的主人剛剛斷線，30 分鐘內保留給他，換一個吧' });
+      prev = off.snap; back = true;
+      sess = { token: off.token };
+    }
+    offline.delete(key);
   }
 
   const token = sess?.token ?? crypto.randomBytes(16).toString('hex');
@@ -264,7 +276,8 @@ function join(ws, msg) {
   });
   sendExp(p);
   broadcast({ t: 'join', p: publicInfo(p) });
-  systemChat(`${name}（${c.name}）加入了`);
+  if (back) systemChat(`${name} 回來了`);
+  else if (!prev) systemChat(`${name}（${c.name}）加入了`);
 }
 
 // 出生點：離 BOSS 有一段距離的地圖外圈
@@ -281,10 +294,15 @@ function removePlayer(p, announce = true) {
   players.delete(p.id);
   broadcast({ t: 'leave', id: p.id });
   if (announce) {
-    // 正常離開才釋放名字；重連（announce=false）會沿用
-    const sess = sessions.get(nameKey(p.name));
-    if (sess?.id === p.id) sessions.delete(nameKey(p.name));
-    systemChat(`${p.name} 離開了`);
+    // 斷線：把角色狀態存起來保留 30 分鐘，同一個 token 回來就接回（重連 announce=false 不走這裡）
+    const key = nameKey(p.name);
+    const sess = sessions.get(key);
+    if (sess?.id === p.id) {
+      sessions.delete(key);
+      const snap = { cls: p.cls, lv: p.lv, exp: p.exp, hp: p.hp, mp: p.mp, dead: p.dead, deadUntil: p.deadUntil, cds: p.cds, x: p.x, y: p.y };
+      offline.set(key, { token: sess.token, snap, until: Date.now() + OFFLINE_KEEP_MS });
+    }
+    systemChat(`${p.name} 斷線了`);
   }
 }
 
@@ -745,6 +763,11 @@ wss.on('connection', (ws) => {
   });
   ws.on('close', () => { if (ws.player) removePlayer(ws.player); });
 });
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, off] of offline) if (now >= off.until) offline.delete(key);
+}, 60000);
 
 // 心跳：30 秒沒回應就斷線（也讓 Cloudflare tunnel 不會因閒置斷開）
 setInterval(() => {

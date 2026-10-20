@@ -153,3 +153,6 @@ body.typing #skills { display: none; }
   text-shadow: 0 3px 0 #000; animation: marquee 2.6s linear forwards; }
 @keyframes marquee { from { transform: translateX(0); } to { transform: translateX(calc(-100vw - 100%)); } }
 #soundbtn { pointer-events: auto; font-size: 12px; padding: 3px 10px; background: var(--panel); }
+
+/* 斷線提示 */
+#netmsg { position: fixed; left: 50%; top: calc(var(--sa-t) + 64px); transform: translateX(-50%); background: rgba(185, 28, 28, .9); padding: 6px 16px; border-radius: 999px; font-size: var(--fs); pointer-events: none; z-index: 5; }

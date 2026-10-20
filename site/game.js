@@ -154,32 +154,57 @@ function renderClassCards() {
 }
 
 // ---------- 連線 ----------
+// 身分 token 存在 localStorage：手機把分頁丟掉重開也還在，30 分鐘內用同一個 ID 回來會接回原本的角色
+const tokenKey = () => 'token:' + myName.normalize('NFKC').toLowerCase();
+function loadToken() {
+  try { return localStorage.getItem(tokenKey()) || sessionStorage.getItem(tokenKey()); } catch { return null; }
+}
+function saveToken(t) {
+  try { localStorage.setItem(tokenKey(), t); } catch { try { sessionStorage.setItem(tokenKey(), t); } catch {} }
+}
+
+let lastMsgAt = 0;
 function connect() {
+  if (ws) { ws.onclose = null; ws.onmessage = null; try { ws.close(); } catch {} }
+  clearTimeout(reconnectTimer);
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => {
+  const sock = new WebSocket(`${proto}://${location.host}/ws`);
+  ws = sock;
+  lastMsgAt = performance.now();
+  sock.onopen = () => {
     setStatus(true);
-    ws.send(JSON.stringify({ t: 'join', name: myName, cls: myCls, token: sessionStorage.getItem('token:' + myName.toLowerCase()) }));
+    sock.send(JSON.stringify({ t: 'join', name: myName, cls: myCls, token: loadToken() }));
   };
-  ws.onmessage = (e) => handle(JSON.parse(e.data));
-  ws.onclose = () => {
+  sock.onmessage = (e) => { lastMsgAt = performance.now(); handle(JSON.parse(e.data)); };
+  sock.onclose = () => {
+    if (ws !== sock) return;
     setStatus(false);
     // 已進入遊戲的人自動重連
-    if (joined) { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 1500); }
+    if (joined) reconnectTimer = setTimeout(connect, 1500);
   };
 }
 
-// 手機切回前景時，連線若已斷就立刻重連
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && joined && ws?.readyState !== 1 && ws?.readyState !== 0) {
-    clearTimeout(reconnectTimer); connect();
-  }
-});
+// 假連線偵測：伺服器每秒送 20 次快照，超過 4 秒沒收到任何訊息就當作斷了，直接重連。
+// iOS 從背景回來時 WebSocket 常常還顯示 OPEN，其實早就被伺服器斷掉，不這樣做會卡住不動
+const STALE_MS = 4000;
+setInterval(() => {
+  if (joined && ws?.readyState === 1 && performance.now() - lastMsgAt > STALE_MS) { setStatus(false); connect(); }
+}, 1000);
 
-function setStatus(on) { $('dot').classList.toggle('on', on); }
+// 手機切回前景：連線不正常就立刻重連，不用等
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !joined) return;
+  if (ws?.readyState !== 1 || performance.now() - lastMsgAt > 1500) connect();
+});
+window.addEventListener('online', () => { if (joined) connect(); });
+
+function setStatus(on) {
+  $('dot').classList.toggle('on', on);
+  $('netmsg').hidden = on || !joined;
+}
 
 // ---------- 自動更新 ----------
-// 部署新版後伺服器會通知；重新整理後用同一個 ID、職業自動進場（token 在 sessionStorage，會接回原本的角色）
+// 部署新版後伺服器會通知；重新整理後用同一個 ID、職業自動進場（token 在 localStorage，會接回原本的角色）
 let myVer = '';
 function reloadForUpdate() {
   try { sessionStorage.setItem('autojoin', JSON.stringify({ name: myName, cls: myCls })); } catch {}
@@ -194,7 +219,10 @@ function handle(m) {
   switch (m.t) {
     case 'error':
       $('joinerr').textContent = m.msg;
-      if (!joined) { ws.onclose = null; ws.close(); setStatus(false); }
+      // 重連時被拒（例如超過 30 分鐘、ID 被別人用走）：回到進場畫面讓玩家換 ID
+      joined = false;
+      ws.onclose = null; ws.close(); setStatus(false);
+      $('join').classList.remove('hidden');
       break;
     case 'ver': if (myVer && m.v !== myVer) reloadForUpdate(); break;
     case 'welcome': {
@@ -202,7 +230,7 @@ function handle(m) {
       if (myVer && m.ver && m.ver !== myVer) return reloadForUpdate();
       myVer = m.ver;
       joined = true; myId = m.id; map = m.map; CLASSES = m.classes; bossCfg = m.bossCfg;
-      sessionStorage.setItem('token:' + myName.toLowerCase(), m.token);
+      saveToken(m.token);
       try { localStorage.setItem('lastName', myName); } catch {}
       players.clear(); orbs.clear(); xpOrbs.clear(); balls.length = 0; effects.length = 0;
       for (const p of m.players) addPlayer(p);
