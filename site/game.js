@@ -331,6 +331,8 @@ function handle(m) {
       for (const p of m.players) addPlayer(p);
       for (const o of m.orbs) orbs.set(o.id, o);
       for (const o of m.xpOrbs) xpOrbs.set(o.id, o);
+      stageIdx = m.stageIdx ?? -1; terrainFx = m.terrainFx || {}; loadStages();
+      powerups.clear(); for (const u of m.powerups || []) powerups.set(u.id, u);
       setBoss(m.boss, true);
       m.cds.forEach((ms, k) => { readyAt[k] = performance.now() + ms; cdTotal[k] = ms; });
       top3 = m.top3 || []; topBuff = m.topBuff || [];
@@ -440,6 +442,16 @@ function onFx(f, now) {
     case 'orb+': orbs.set(f.id, f); break;
     case 'orb-': orbs.delete(f.id); break;
     case 'xp+': xpOrbs.set(f.id, f); break;
+    case 'pu+': powerups.set(f.id, f); break;
+    case 'pu-': powerups.delete(f.id); if (players.get(f.by)) effects.push({ k: 'buffget', id: f.by, kind: f.kind, born: now, life: 700 }); break;
+    case 'ballx': {
+      // 足球撞到障礙物
+      const i = balls.findIndex((b) => b.id === f.id);
+      if (i >= 0) balls.splice(i, 1);
+      spr('boss', 1, f.x, f.y + 20, 90, 380, now, { anchor: 'feet' });
+      break;
+    }
+    case 'stage': stageIdx = f.idx; loadStages(); break;
     case 'xp-': xpOrbs.delete(f.id); break;
     case 'lv':
       if (p) { p.lv = f.lv; p.maxHp = f.maxHp; p.maxMp = f.maxMp; }
@@ -455,7 +467,7 @@ function onFx(f, now) {
       if (r >= 0 && r !== was) toast(`你是全服第 ${r + 1} 名！移速 +${Math.round((topBuff[r].speed - 1) * 100)}%、冷卻 -${Math.round((1 - topBuff[r].cd) * 100)}%`);
       break;
     }
-    case 'bossspawn': banner(`第 ${f.level} 輪　${bossCfg.name}出現！`); break;
+    case 'bossspawn': banner(`第 ${f.level} 輪　${stage()?.name ? `【${stage().name}】` : ''}${bossCfg.name}出現！`); break;
     case 'victory': banner(`擊敗${bossCfg.name}！`); break;
     case 'dmg':
       // 打 BOSS 的數字只顯示自己打的，40 人一起打才不會滿畫面都是數字
@@ -793,6 +805,10 @@ function updateHud(now) {
   const st = [];
   if (me.flags & 1) st.push('倒地');
   if (me.flags & 4) st.push('嘲諷中');
+  if (me.flags & 16) st.push('加速中');
+  if (me.flags & 32) st.push('力量提升');
+  const ter = terrainAtClient(me.x, me.y);
+  if (ter) st.push(`在${TERRAIN_NAME[ter] ?? ter}裡`);
   if (me.flags & 8) st.push('減傷');
   if (me.flags & 2 && !(me.flags & 1)) st.push('無敵');
   const tr = topRank(myId);
@@ -850,9 +866,58 @@ function viewRect() {
   return { l: cam.x - hw, r: cam.x + hw, t: cam.y - hh, b: cam.y + hh };
 }
 
+// ---------- 關卡地圖 ----------
+// maps/stages.json：每關的障礙物、地形、道具刷新點（伺服器用同一份）；素材在 maps/<關卡>/ground.png、terrain.png、props.png
+// 素材還沒生成好時，用下面的主題色代替
+const STAGE_STYLE = {
+  meadow: { ground: '#3f7d3a', terrain: '#6b4f2a', prop: '#2f5e2b' },
+  village: { ground: '#7a6a45', terrain: '#3d7fa6', prop: '#8b5a2b' },
+  city: { ground: '#4b5563', terrain: '#ca8a04', prop: '#6b7280' },
+  desert: { ground: '#d6b56d', terrain: '#a8844a', prop: '#b07a3a' },
+  beach: { ground: '#e8d39a', terrain: '#3aa0c8', prop: '#4d7c3a' },
+  snow: { ground: '#dbe7f0', terrain: '#9fd3f0', prop: '#5f7f96' },
+  lava: { ground: '#2b2422', terrain: '#f05a1a', prop: '#3a3330' },
+  sky: { ground: '#e9e3c9', terrain: '#fff4b0', prop: '#a5c8e0' },
+};
+const TERRAIN_NAME = { mud: '泥沼', pond: '池塘', quicksand: '流沙', sea: '海水', conveyor: '加速帶', starwind: '星光氣流', ice: '冰面', lava: '熔岩' };
+let stages = [], stageIdx = -1, terrainFx = {};
+const stage = () => stages[stageIdx] ?? null;
+const powerups = new Map();
+const mapArt = {};
+function loadStages() {
+  return fetch('maps/stages.json', { cache: 'no-store' }).then((r) => r.json()).then((d) => { stages = d.stages || []; }).catch(() => {});
+}
+loadStages();
+function artFor(id) {
+  if (!id) return null;
+  if (!mapArt[id]) {
+    const img = (src) => { const i = new Image(); i.src = src; return i; };
+    mapArt[id] = { ground: img(`maps/${id}/ground.png`), terrain: img(`maps/${id}/terrain.png`), props: loadSheet(`maps/${id}/props.png`, 2), pat: {} };
+  }
+  return mapArt[id];
+}
+const powerupSheet = loadSheet('maps/powerups.png', 4);
+function patternOf(art, key) {
+  const im = art?.[key];
+  if (!im || !im.complete || !im.naturalWidth) return null;
+  return art.pat[key] ??= ctx.createPattern(im, 'repeat');
+}
+
 function drawGrid(v) {
-  ctx.fillStyle = '#132042';
+  const st = stage(), sty = STAGE_STYLE[st?.id] ?? { ground: '#132042', terrain: '#334155' }, art = artFor(st?.id);
+  ctx.fillStyle = patternOf(art, 'ground') ?? sty.ground;
   ctx.fillRect(0, 0, map.w, map.h);
+  // 地形：橢圓裡鋪地形貼圖
+  for (const t of st?.terrain ?? []) {
+    ctx.save();
+    ctx.beginPath(); ctx.ellipse(t.x, t.y, t.rx, t.ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = patternOf(art, 'terrain') ?? sty.terrain;
+    ctx.globalAlpha = 0.9;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0, 0, 0, .25)'; ctx.stroke();
+    ctx.restore();
+  }
   ctx.strokeStyle = 'rgba(148, 163, 184, .12)';
   ctx.lineWidth = 1;
   const step = 80;
@@ -872,6 +937,48 @@ function drawGrid(v) {
   ctx.strokeStyle = '#facc15';
   ctx.lineWidth = 4;
   ctx.strokeRect(0, 0, map.w, map.h);
+}
+
+function drawObstacle(o, art, sty) {
+  const sh = art?.props;
+  const feet = o.y + o.r * 0.55;
+  if (sh?.ready) {
+    const size = o.r * 2.8;
+    ctx.save(); ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(sh.img, (o.kind === 'mid' ? 1 : 0) * sh.size, 0, sh.size, sh.size, o.x - size / 2, feet - size * 0.97, size, size);
+    ctx.restore();
+  } else {
+    ctx.beginPath(); ctx.ellipse(o.x, feet, o.r, o.r * 0.4, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0, 0, 0, .3)'; ctx.fill();
+    ctx.beginPath(); ctx.arc(o.x, o.y - o.r * 0.2, o.r, 0, Math.PI * 2);
+    ctx.fillStyle = sty?.prop ?? '#555'; ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0, 0, 0, .4)'; ctx.stroke();
+  }
+}
+
+// 道具：加速（青色）、加傷害（紅色）；沒有素材時用圖形代替
+function drawPowerups(now) {
+  for (const u of powerups.values()) {
+    const bob = Math.sin(now / 250 + u.id) * 4, row = u.kind === 'speed' ? 0 : 1;
+    if (powerupSheet.ready) {
+      ctx.save(); ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(powerupSheet.img, (Math.floor(now / 150) % 4) * powerupSheet.size, row * powerupSheet.size, powerupSheet.size, powerupSheet.size, u.x - 26, u.y - 26 + bob, 52, 52);
+      ctx.restore();
+    } else {
+      const c = u.kind === 'speed' ? '#22d3ee' : '#ef4444';
+      ctx.beginPath(); ctx.arc(u.x, u.y + bob, 18, 0, Math.PI * 2);
+      ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = glow(16); ctx.fill(); ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.beginPath();
+      if (u.kind === 'speed') {
+        ctx.moveTo(u.x - 8, u.y + bob - 7); ctx.lineTo(u.x, u.y + bob); ctx.lineTo(u.x - 8, u.y + bob + 7);
+        ctx.moveTo(u.x, u.y + bob - 7); ctx.lineTo(u.x + 8, u.y + bob); ctx.lineTo(u.x, u.y + bob + 7);
+      } else {
+        ctx.moveTo(u.x, u.y + bob - 10); ctx.lineTo(u.x, u.y + bob + 6);
+        ctx.moveTo(u.x - 6, u.y + bob + 2); ctx.lineTo(u.x + 6, u.y + bob + 2);
+      }
+      ctx.stroke();
+    }
+  }
 }
 
 function drawBubble(lines, x, y) {
@@ -982,6 +1089,18 @@ function drawPlayer(p, now) {
   ctx.fillStyle = `hsl(${p.hue} 85% 55% / ${dead ? 0.25 : 0.6})`;
   ctx.fill();
   if (p.flags & 4) { ctx.lineWidth = 3; ctx.strokeStyle = '#ef4444'; ctx.stroke(); }
+  // 加速：青色速度線；加傷害：紅色脈動光圈
+  if (p.flags & 16 && !dead) {
+    ctx.strokeStyle = 'rgba(34, 211, 238, .8)'; ctx.lineWidth = 3;
+    for (let i = 0; i < 3; i++) {
+      const yy = p.y - 18 + i * 14, len = 14 + ((now / 60 + i * 7) % 14);
+      ctx.beginPath(); ctx.moveTo(p.x - p.face * 26, yy); ctx.lineTo(p.x - p.face * (26 + len), yy); ctx.stroke();
+    }
+  }
+  if (p.flags & 32 && !dead) {
+    ctx.beginPath(); ctx.ellipse(p.x, feet, r * (1.3 + Math.sin(now / 120) * 0.1), r * 0.55, 0, 0, Math.PI * 2);
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(239, 68, 68, .85)'; ctx.shadowColor = '#ef4444'; ctx.shadowBlur = glow(12); ctx.stroke(); ctx.shadowBlur = 0;
+  }
   else if (p.id === myId) { ctx.lineWidth = 3; ctx.strokeStyle = '#ffffff'; ctx.stroke(); }
   const rank = topRank(p.id);
   if (rank >= 0 && !dead) drawTopAura(p, rank, now, feet);
@@ -1142,6 +1261,11 @@ function drawAirFx(now) {
       ctx.beginPath(); ctx.arc(p.x, p.y, 30 + 40 * t, 0, Math.PI * 2);
       ctx.lineWidth = 4; ctx.strokeStyle = e.k === 'taunt' ? `rgba(239, 68, 68, ${1 - t})` : `rgba(250, 204, 21, ${1 - t})`;
       ctx.stroke();
+    } else if (e.k === 'buffget') {
+      const p = players.get(e.id);
+      if (!p) continue;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 20 + 50 * t, 0, Math.PI * 2);
+      ctx.lineWidth = 5; ctx.strokeStyle = e.kind === 'speed' ? `rgba(34, 211, 238, ${1 - t})` : `rgba(239, 68, 68, ${1 - t})`; ctx.stroke();
     } else if (e.k === 'lvup') {
       const p = players.get(e.id);
       if (!p) continue;
@@ -1236,6 +1360,13 @@ function drawMinimap(v) {
   mctx.strokeStyle = 'rgba(250, 204, 21, .5)';
   mctx.lineWidth = dpr;
   mctx.strokeRect(v.l * sx, v.t * sy, (v.r - v.l) * sx, (v.b - v.t) * sy);
+  const st = stage(), sty = STAGE_STYLE[st?.id];
+  for (const t of st?.terrain ?? []) {
+    mctx.beginPath(); mctx.ellipse(t.x * sx, t.y * sy, t.rx * sx, t.ry * sy, 0, 0, Math.PI * 2);
+    mctx.fillStyle = (sty?.terrain ?? '#888888') + '99'; mctx.fill();
+  }
+  mctx.fillStyle = 'rgba(15, 23, 42, .8)';
+  for (const o of st?.obstacles ?? []) { mctx.beginPath(); mctx.arc(o.x * sx, o.y * sy, Math.max(1.5 * dpr, o.r * sx), 0, Math.PI * 2); mctx.fill(); }
   mctx.fillStyle = '#4ade80';
   for (const o of orbs.values()) mctx.fillRect(o.x * sx - dpr, o.y * sy - dpr, 2 * dpr, 2 * dpr);
   for (const p of players.values()) {
@@ -1249,6 +1380,14 @@ function drawMinimap(v) {
   }
 }
 
+function terrainAtClient(x, y) {
+  for (const t of stage()?.terrain ?? []) {
+    const dx = (x - t.x) / t.rx, dy = (y - t.y) / t.ry;
+    if (dx * dx + dy * dy <= 1) return t.type;
+  }
+  return null;
+}
+
 // 自己的角色本地預測：照搖桿方向與職業速度先動，再慢慢對齊伺服器位置，延遲高時手感也是即時的；
 // 差太多（被 BOSS 推開、衝刺、閃現、復活）就直接校正
 function predictSelf(dt) {
@@ -1256,10 +1395,15 @@ function predictSelf(dt) {
   if (!me || !CLASSES) return;
   const c = CLASSES[me.cls];
   const r = topRank(myId);
-  const speed = c.speed * (me.flags & 1 ? 0.5 : 1) * (r >= 0 ? topBuff[r].speed : 1);
+  const ter = terrainFx[terrainAtClient(me.x, me.y)];
+  const speed = c.speed * (me.flags & 1 ? 0.5 : 1) * (r >= 0 ? topBuff[r].speed : 1) * (ter?.speed ?? 1) * (me.flags & 16 ? 1.5 : 1);
   const [ix, iy] = moveDir();
   me.x = Math.max(map.r, Math.min(map.w - map.r, me.x + ix * speed * dt));
   me.y = Math.max(map.r, Math.min(map.h - map.r, me.y + iy * speed * dt));
+  for (const o of stage()?.obstacles ?? []) {
+    const dx = me.x - o.x, dy = me.y - o.y, d = Math.hypot(dx, dy) || 0.01, min = o.r + map.r;
+    if (d < min) { me.x = o.x + dx / d * min; me.y = o.y + dy / d * min; }
+  }
   if (Math.abs(ix) > 0.05) me.face = ix < 0 ? -1 : 1;
   if (Math.hypot(ix, iy) > 0.05) me.movingUntil = performance.now() + 150;
   const ex = me.tx - me.x, ey = me.ty - me.y, err = Math.hypot(ex, ey);
@@ -1314,12 +1458,18 @@ function drawFrameAll(now) {
     drawGrid(v);
     drawGroundFx(now);
     drawOrbs(now);
+    drawPowerups(now);
     drawXpOrbs(now, v);
     // 角色與 BOSS 依 y 排序，越下面的越晚畫，前後遮擋才自然
     const actors = [...players.values()]
       .filter((p) => p.x > v.l - m && p.x < v.r + m && p.y > v.t - m && p.y < v.b + m)
       .map((p) => ({ y: p.y, draw: () => drawPlayer(p, now) }));
     if (boss.alive) actors.push({ y: boss.y + bossCfg.r * 0.6, draw: () => drawBoss(now) });
+    const st = stage(), art = artFor(st?.id), sty = STAGE_STYLE[st?.id];
+    for (const o of st?.obstacles ?? []) {
+      if (o.x < v.l - 150 || o.x > v.r + 150 || o.y < v.t - 150 || o.y > v.b + 200) continue;
+      actors.push({ y: o.y + o.r * 0.55, draw: () => drawObstacle(o, art, sty) });
+    }
     actors.sort((a, b) => a.y - b.y).forEach((a) => a.draw());
     drawBalls(now);
     drawAirFx(now);

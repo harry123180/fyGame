@@ -256,7 +256,78 @@ setInterval(() => {
   net.bytes = 0; net.skipped = 0; net.tickMax = 0; net.tickSum = 0; net.ticks = 0; net.driftMax = 0;
 }, 10000);
 const publicInfo = (p) => ({ id: p.id, name: p.name, hue: p.hue, cls: p.cls, char: p.char, lv: p.lv, maxHp: p.maxHp, maxMp: p.maxMp, x: Math.round(p.x), y: Math.round(p.y) });
-const power = (p) => 1 + lvMult.power * (p.lv - 1);
+const power = (p) => (1 + lvMult.power * (p.lv - 1)) * (Date.now() < p.powerUntil ? POWERUP.power.mult : 1);
+
+// ---------- 關卡地圖：每輪 BOSS 換一張（html/maps/stages.json，前端讀同一份；改地圖不用重啟伺服器） ----------
+// 地形效果：speed＝速度倍率、slide＝冰面會滑、dps＝每秒扣血
+const TERRAIN = {
+  mud: { speed: 0.6 }, pond: { speed: 0.7 }, quicksand: { speed: 0.55 }, sea: { speed: 0.65 },
+  conveyor: { speed: 1.35 }, starwind: { speed: 1.4 },
+  ice: { speed: 1.35, slide: true },
+  lava: { speed: 0.9, dps: 8 },
+};
+const POWERUP = {
+  speed: { mult: 1.5, ms: 8000 },
+  power: { mult: 1.5, ms: 10000 },
+  max: 5, everyMs: 6000, r: 18,
+};
+const STAGES_FILE = path.join(HTML_DIR, 'maps', 'stages.json');
+let stages = [], stage = null, stageIdx = -1;
+function loadStages() {
+  try { stages = JSON.parse(fs.readFileSync(STAGES_FILE, 'utf8')).stages || []; } catch { stages = []; }
+}
+function setStage(level) {
+  loadStages();
+  stageIdx = stages.length ? (level - 1) % stages.length : -1;
+  stage = stageIdx >= 0 ? stages[stageIdx] : null;
+  powerups.clear();
+  balls.length = 0;
+  fx.push({ k: 'stage', idx: stageIdx, id: stage?.id ?? null });
+  // 換地圖時把卡在障礙物裡的人推出來
+  for (const p of players.values()) pushOutOfObstacles(p);
+}
+const obstacles = () => stage?.obstacles ?? [];
+function terrainAt(x, y) {
+  for (const t of stage?.terrain ?? []) {
+    const dx = (x - t.x) / t.rx, dy = (y - t.y) / t.ry;
+    if (dx * dx + dy * dy <= 1) return TERRAIN[t.type] ? t.type : null;
+  }
+  return null;
+}
+function pushOutOfObstacles(p) {
+  for (const o of obstacles()) {
+    const dx = p.x - o.x, dy = p.y - o.y, d = Math.hypot(dx, dy) || 0.01, min = o.r + RADIUS;
+    if (d < min) { p.x = o.x + dx / d * min; p.y = o.y + dy / d * min; }
+  }
+}
+
+const powerups = new Map();  // id -> { id, x, y, kind }
+let lastPowerupAt = 0;
+function tickPowerups(now) {
+  const spots = stage?.powerups ?? [];
+  if (spots.length && powerups.size < POWERUP.max && now - lastPowerupAt > POWERUP.everyMs) {
+    lastPowerupAt = now;
+    const used = new Set([...powerups.values()].map((u) => `${u.x},${u.y}`));
+    const free = spots.filter((pt) => !used.has(`${pt.x},${pt.y}`));
+    if (free.length) {
+      const pt = free[Math.floor(Math.random() * free.length)];
+      const u = { id: nextOrbId++, x: pt.x, y: pt.y, kind: Math.random() < 0.5 ? 'speed' : 'power' };
+      powerups.set(u.id, u);
+      fx.push({ k: 'pu+', ...u });
+    }
+  }
+  for (const u of powerups.values()) {
+    for (const p of players.values()) {
+      if (p.dead || Math.hypot(p.x - u.x, p.y - u.y) > RADIUS + POWERUP.r) continue;
+      powerups.delete(u.id);
+      if (u.kind === 'speed') p.speedUntil = now + POWERUP.speed.ms;
+      else p.powerUntil = now + POWERUP.power.ms;
+      fx.push({ k: 'pu-', id: u.id, by: p.id, kind: u.kind });
+      send(p.ws, { t: 'toast', msg: u.kind === 'speed' ? '加速！移動速度 ×1.5（8 秒）' : '力量提升！傷害 ×1.5（10 秒）' });
+      break;
+    }
+  }
+}
 
 // 依等級重算 HP／MP 上限
 function applyLevel(p) {
@@ -323,6 +394,8 @@ function join(ws, msg) {
   }
 
   const token = sess?.token ?? crypto.randomBytes(16).toString('hex');
+  // 第一個人進場時先讓 BOSS 出現、換上這一輪的地圖，出生點才會落在地圖的出生區
+  if (!boss.alive && (boss.level === 0 || boss.respawnAt === 0)) spawnBoss();
   const c = CLASSES[cls];
   const keep = prev && prev.cls === cls;
   const spawn = prev ?? randomSpawn();
@@ -338,18 +411,18 @@ function join(ws, msg) {
   };
   applyLevel(p);
   if (!keep) { p.hp = p.maxHp; p.mp = p.maxMp; }
+  pushOutOfObstacles(p);
   ws.player = p;
   players.set(p.id, p);
   sessions.set(key, { token, id: p.id });
-  if (!boss.alive && (boss.level === 0 || boss.respawnAt === 0)) spawnBoss();
   // 戰鬥中有新玩家加入（不是重連），BOSS 的 HP 跟著加，人多人少都打得夠久
-  else if (boss.alive && !prev) {
+  if (boss.alive && !prev && players.size > 1) {
     const add = Math.round(BOSS.hpPerPlayer * (1 + 0.25 * (boss.level - 1)));
     boss.maxHp += add; boss.hp += add;
   }
 
   send(ws, {
-    t: 'welcome', id: p.id, token, ver: siteVer, map: { w: MAP_W, h: MAP_H, r: RADIUS },
+    t: 'welcome', id: p.id, token, ver: siteVer, map: { w: MAP_W, h: MAP_H, r: RADIUS }, stageIdx, powerups: [...powerups.values()], terrainFx: TERRAIN,
     classes: CLASSES, chars: CHARS, boss: bossInfo(), bossCfg: { name: BOSS.name, r: BOSS.r, anims: BOSS_ANIMS },
     players: [...players.values()].map(publicInfo), orbs: [...orbs.values()], xpOrbs: [...xpOrbs.values()], chat: chatLog,
     cds: p.cds.map((t) => Math.max(0, t - Date.now())), top3, topBuff: TOP_BUFF,
@@ -362,6 +435,11 @@ function join(ws, msg) {
 
 // 出生點：離 BOSS 有一段距離的地圖外圈
 function randomSpawn() {
+  const zones = stage?.spawns ?? [];
+  if (zones.length) {
+    const z = zones[Math.floor(Math.random() * zones.length)];
+    return { x: z.x + Math.random() * z.w, y: z.y + Math.random() * z.h };
+  }
   for (let i = 0; i < 20; i++) {
     const pt = { x: 150 + Math.random() * (MAP_W - 300), y: 150 + Math.random() * (MAP_H - 300) };
     if (dist(pt, boss) > 500) return pt;
@@ -622,6 +700,7 @@ const bossInfo = () => ({
 
 function spawnBoss() {
   boss.level++;
+  setStage(boss.level);
   const n = Math.max(1, players.size);
   boss.maxHp = Math.round((BOSS.hpBase + BOSS.hpPerPlayer * n) * (1 + 0.25 * (boss.level - 1)));
   boss.hp = boss.maxHp;
@@ -630,7 +709,7 @@ function spawnBoss() {
   boss.nextActionAt = Date.now() + 3000;
   setBossAnim(0);
   fx.push({ k: 'bossspawn', level: boss.level });
-  systemChat(`第 ${boss.level} 輪：${BOSS.name} 出現在地圖中央！（HP ${boss.maxHp}）`);
+  systemChat(`第 ${boss.level} 輪${stage ? `【${stage.name}】` : ''}：${BOSS.name} 出現在地圖中央！（HP ${boss.maxHp}）`);
 }
 
 function defeatBoss(now) {
@@ -747,6 +826,11 @@ function tickBalls(now, dt) {
     const b = balls[i];
     b.x += b.vx * dt; b.y += b.vy * dt;
     if (now >= b.until || b.x < 0 || b.y < 0 || b.x > MAP_W || b.y > MAP_H) { balls.splice(i, 1); continue; }
+    if (obstacles().some((o) => Math.hypot(b.x - o.x, b.y - o.y) < o.r + c.r)) {
+      fx.push({ k: 'ballx', id: b.id, x: Math.round(b.x), y: Math.round(b.y) });
+      balls.splice(i, 1);
+      continue;
+    }
     for (const p of players.values()) {
       if (b.hit.has(p.id) || p.dead) continue;
       if (Math.hypot(p.x - b.x, p.y - b.y) <= c.r + RADIUS) { b.hit.add(p.id); hurt(p, bossDmg(c.dmg), now); }
@@ -899,9 +983,19 @@ setInterval(() => {
         p.dash = null;
       }
     } else {
-      const speed = c.speed * (p.dead ? 0.5 : 1) * (buffOf(p)?.speed ?? 1);  // 倒地時可以慢慢走去找補師
-      p.x += p.ix * speed * dt;
-      p.y += p.iy * speed * dt;
+      const ter = TERRAIN[terrainAt(p.x, p.y)];
+      const speed = c.speed * (p.dead ? 0.5 : 1) * (buffOf(p)?.speed ?? 1)  // 倒地時可以慢慢走去找補師
+        * (ter?.speed ?? 1) * (now < p.speedUntil ? POWERUP.speed.mult : 1);
+      // 冰面：速度慢慢跟上搖桿（會滑）；其他地面：馬上跟上
+      const follow = ter?.slide ? 1 - Math.exp(-dt * 2.5) : 1;
+      p.vx = (p.vx ?? 0) + (p.ix * speed - (p.vx ?? 0)) * follow;
+      p.vy = (p.vy ?? 0) + (p.iy * speed - (p.vy ?? 0)) * follow;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      if (ter?.dps && !p.dead) {
+        p.lavaAcc = (p.lavaAcc ?? 0) + ter.dps * dt;
+        if (p.lavaAcc >= 4) { p.lavaAcc -= 4; hurt(p, 4, now); }
+      }
     }
   }
   // 球與球之間互相推開
@@ -918,7 +1012,8 @@ setInterval(() => {
     }
   }
   for (const p of list) {
-    // 不能穿過 BOSS 身體
+    // 不能穿過障礙物與 BOSS 身體
+    pushOutOfObstacles(p);
     if (boss.alive && !p.dead) {
       const dx = p.x - boss.x, dy = p.y - boss.y, d = Math.hypot(dx, dy) || 1, min = BOSS.r + RADIUS;
       if (d < min) { p.x = boss.x + dx / d * min; p.y = boss.y + dy / d * min; }
@@ -932,12 +1027,14 @@ setInterval(() => {
   tickOrbs(now);
   tickXpOrbs(now);
   tickTop3(now);
+  tickPowerups(now);
 
   // 精簡格式：[id, x, y, hp, mp, flags, ...]；flags：1 倒地、2 無敵、4 嘲諷中、8 減傷
   if (list.length) {
     const s = [];
     for (const p of list) {
-      const flags = (p.dead ? 1 : 0) | (isInvuln(p, now) ? 2 : 0) | (now < p.tauntUntil ? 4 : 0) | (now < p.guardUntil ? 8 : 0);
+      const flags = (p.dead ? 1 : 0) | (isInvuln(p, now) ? 2 : 0) | (now < p.tauntUntil ? 4 : 0) | (now < p.guardUntil ? 8 : 0)
+        | (now < p.speedUntil ? 16 : 0) | (now < p.powerUntil ? 32 : 0);
       s.push(p.id, Math.round(p.x), Math.round(p.y), Math.ceil(p.hp), Math.floor(p.mp), flags);
     }
     const msg = { t: 's', s, b: bossInfo() };
