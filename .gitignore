@@ -1,0 +1,7 @@
+node_modules/
+.env
+*.env
+server/html/
+site/version.txt
+__pycache__/
+*.log

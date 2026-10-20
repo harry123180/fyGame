@@ -1,0 +1,14 @@
+services:
+  fygame:
+    build: .
+    image: fygame-server
+    container_name: fygame
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3190:3000"
+    # LLM_BASE_URL／LLM_MODEL／LLM_API_KEY（BOSS 聊天用），只放在伺服器上，不進 git
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./html:/app/html:ro

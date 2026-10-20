@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#0f172a">
+<meta name="description" content="多人連線奶龍組隊打 BOSS">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="fyGame">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<title>fyGame</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud">
+    <div id="left">
+      <div id="statpanel">
+        <div id="stathead"><canvas id="avatar" width="40" height="40" aria-label="打開排行榜"></canvas><b id="statname"></b><span id="statcls"></span></div>
+        <div class="bar hp"><i id="hpfill"></i><span id="hptext"></span></div>
+        <div class="bar mp"><i id="mpfill"></i><span id="mptext"></span></div>
+        <div class="bar xp"><i id="xpfill"></i><span id="xptext"></span></div>
+        <div id="statstate"></div>
+      </div>
+      <div id="chatlog"></div>
+    </div>
+    <div id="bossbar" hidden>
+      <div id="bossname"></div>
+      <div class="bar boss"><i id="bossfill"></i><span id="bosstext"></span></div>
+    </div>
+    <div id="side">
+      <div id="status"><span id="dot"></span><span id="online">0</span> 人在線</div>
+      <button type="button" id="soundbtn" class="ghost">聲音 開</button>
+      <canvas id="minimap"></canvas>
+    </div>
+  </div>
+
+  <div id="rank" hidden>
+    <div id="rankbox">
+      <div id="rankhead"><b>全服排行榜</b><button type="button" id="rankclose" class="ghost">關閉</button></div>
+      <div id="ranktabs">
+        <button type="button" data-tab="dmg" class="on">對 BOSS 傷害</button>
+        <button type="button" data-tab="heal">治療量</button>
+      </div>
+      <ol id="ranklist"></ol>
+      <div id="rankme"></div>
+    </div>
+  </div>
+
+  <div id="marquee"></div>
+  <div id="banner" hidden></div>
+  <div id="toast" hidden></div>
+  <div id="deadmsg" hidden></div>
+
+  <div id="skills">
+    <button class="skill" data-k="1"><span class="name"></span><span class="mp"></span><i class="cd"></i></button>
+    <button class="skill" data-k="2"><span class="name"></span><span class="mp"></span><i class="cd"></i></button>
+    <button class="skill main" data-k="0"><span class="name"></span><i class="cd"></i></button>
+  </div>
+
+  <form id="chatbar" autocomplete="off">
+    <input id="chatinput" maxlength="100" placeholder="說點什麼…" enterkeyhint="send">
+    <button type="submit">送出</button>
+  </form>
+
+  <div id="join">
+    <form id="joinform" autocomplete="off">
+      <h1>fyGame</h1>
+      <p>選職業，輸入遊戲 ID，大家一起打 BOSS</p>
+      <div id="classes"></div>
+      <input id="nameinput" maxlength="12" placeholder="遊戲 ID" enterkeyhint="go">
+      <button type="submit">進入</button>
+      <p id="joinerr"></p>
+      <button type="button" id="installbtn" class="ghost" hidden>加到主畫面</button>
+      <p id="iosinstall" hidden>iPhone：點 Safari 下方「分享」→「加入主畫面」</p>
+    </form>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
