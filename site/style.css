@@ -166,3 +166,8 @@ body.typing #skills { display: none; }
   #chars { grid-template-columns: repeat(9, 1fr); }
   .char img { width: 36px; height: 36px; }
 }
+
+/* 延遲與 FPS */
+#ping { margin-left: 4px; color: #86efac; font-variant-numeric: tabular-nums; font-size: .9em; }
+#ping.meh { color: #fde047; }
+#ping.bad { color: #f87171; }

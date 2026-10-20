@@ -204,6 +204,15 @@ function saveToken(t) {
 }
 
 let lastMsgAt = 0, retries = 0;
+// 延遲與 FPS：每 2 秒量一次來回時間，連同 FPS 回報給伺服器（/api/netstats 可查每個人）
+let myRtt = 0, fps = 0, fpsFrames = 0, fpsAt = performance.now();
+// 手機效能保護：FPS 連續偏低就關掉發光（shadowBlur 在手機上很吃效能），恢復後再打開
+let lowFx = false, lowFxScore = 0;
+const glow = (b) => (lowFx ? 0 : b);
+setInterval(() => {
+  if (!joined || ws?.readyState !== 1) return;
+  ws.send(JSON.stringify({ t: 'ping', c: performance.now(), rtt: Math.round(myRtt), fps, ua: navigator.userAgent.slice(0, 80) }));
+}, 2000);
 function connect() {
   if (ws) { ws.onclose = null; ws.onmessage = null; try { ws.close(); } catch {} }
   clearTimeout(reconnectTimer);
@@ -230,9 +239,28 @@ function connect() {
 // 假連線偵測：伺服器每秒送 20 次快照，超過 4 秒沒收到任何訊息就當作斷了，直接重連。
 // iOS 從背景回來時 WebSocket 常常還顯示 OPEN，其實早就被伺服器斷掉，不這樣做會卡住不動
 const STALE_MS = 4000;
+let lastWatch = performance.now();
 setInterval(() => {
-  if (joined && ws?.readyState === 1 && performance.now() - lastMsgAt > STALE_MS) { setStatus(false); connect(); }
+  const now = performance.now();
+  // 這次檢查本身遲到很久＝網頁自己卡住了（例如語音合成、分頁在背景），訊息其實還排在後面等處理，
+  // 不是伺服器沒送；這種情況先不重連，下一輪再看
+  const stalled = now - lastWatch > 2000;
+  lastWatch = now;
+  if (stalled) return;
+  if (joined && ws?.readyState === 1 && now - lastMsgAt > STALE_MS) { diag('stale-reconnect'); setStatus(false); connect(); }
 }, 1000);
+
+// 診斷：網頁出錯、重新整理、被踢回進場畫面時，把原因回報給伺服器記錄（/api/diag）
+function diag(kind, detail = '') {
+  try {
+    const body = JSON.stringify({ kind, detail: String(detail).slice(0, 300), name: myName, joined, ua: navigator.userAgent.slice(0, 120) });
+    navigator.sendBeacon?.('api/diag', new Blob([body], { type: 'text/plain' }));
+  } catch {}
+}
+window.addEventListener('error', (e) => diag('error', `${e.message} @${e.filename?.split('/').pop()}:${e.lineno}`));
+window.addEventListener('unhandledrejection', (e) => diag('rejection', e.reason?.message ?? e.reason));
+let leaveReason = '';
+window.addEventListener('pagehide', () => { if (joined || leaveReason) diag('pagehide', leaveReason || 'unknown'); });
 
 // 手機切回前景：連線不正常就立刻重連，不用等
 document.addEventListener('visibilitychange', () => {
@@ -242,6 +270,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('online', () => { if (joined) connect(); });
 
 function kickedOut(msg) {
+  diag('kicked', msg);
   joined = false;
   clearTimeout(reconnectTimer);
   if (ws) { ws.onclose = null; try { ws.close(); } catch {} }
@@ -268,6 +297,7 @@ setInterval(async () => {
   if (v && v !== myVer) location.reload();
 }, 5000);
 function reloadForUpdate() {
+  leaveReason = 'update';
   try { sessionStorage.setItem('autojoin', JSON.stringify({ name: myName, cls: myCls, char: myChar })); } catch {}
   joined = false;
   ws.onclose = null;
@@ -280,6 +310,7 @@ function handle(m) {
   switch (m.t) {
     case 'error':
       $('joinerr').textContent = m.msg;
+      diag('join-error', m.msg);
       // 重連時被拒（例如超過 30 分鐘、ID 被別人用走）：回到進場畫面讓玩家換 ID
       joined = false;
       ws.onclose = null; ws.close(); setStatus(false);
@@ -287,6 +318,7 @@ function handle(m) {
       break;
     case 'ver': if (myVer && m.v !== myVer) reloadForUpdate(); break;
     case 'kicked': kickedOut(m.msg); break;
+    case 'pong': myRtt = performance.now() - m.c; break;
     case 'welcome': {
       // 斷線重連時發現伺服器已經是新版（例如部署重啟），也要重新整理
       if (myVer && m.ver && m.ver !== myVer) return reloadForUpdate();
@@ -456,17 +488,25 @@ function bossCast(name, now) {
   span.textContent = `${bossCfg.name}：「${name}」！`;
   box.replaceChildren(span);
   boss.shout = name; boss.shoutUntil = now + 1600;
+  // 語音放到下一個空檔再講，不跟收訊息、畫畫面搶同一個時間點；出錯就自動關掉語音，不影響遊戲
   if (soundOn && 'speechSynthesis' in window) {
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(name);
-    u.lang = 'zh-TW'; u.rate = 1.15; u.pitch = 0.7; u.volume = 1;
-    speechSynthesis.speak(u);
+    setTimeout(() => {
+      try {
+        const t0 = performance.now();
+        speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(name);
+        u.lang = 'zh-TW'; u.rate = 1.15; u.pitch = 0.7; u.volume = 1;
+        speechSynthesis.speak(u);
+        const cost = performance.now() - t0;
+        if (cost > 500) diag('speech-slow', `${Math.round(cost)}ms`);
+      } catch (e) { diag('speech-error', e.message); soundOn = false; updateSoundBtn(); }
+    }, 50);
   }
 }
 
 // 頭上大字：紅框白底，比聊天泡泡更醒目
 function drawShout(text, x, y, now) {
-  const t = 1 - (boss.shoutUntil - now) / 1600;
+  const t = Math.max(0, Math.min(1, 1 - (boss.shoutUntil - now) / 1600));
   const scale = t < 0.15 ? 0.6 + t / 0.15 * 0.5 : 1.1 - Math.min(0.1, (t - 0.15));
   ctx.save();
   ctx.translate(x, y - 30);
@@ -536,7 +576,8 @@ $('chatbar').addEventListener('submit', (e) => {
 
 $('joinform').addEventListener('submit', (e) => {
   e.preventDefault();
-  if (composing) return;
+  if (composing || joined) return; // 已經在遊戲裡就不要重新進場
+  document.activeElement?.blur();
   myName = Array.from($('nameinput').value.normalize('NFC').trim()).slice(0, 12).join('');
   if (!myName) { $('joinerr').textContent = '請輸入遊戲 ID'; return; }
   $('joinerr').textContent = '連線中…';
@@ -593,12 +634,20 @@ const keys = new Set();
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.isComposing) return;
   const k = e.key.toLowerCase();
+  // 遊戲中按空白鍵／Enter 不能觸發畫面上（或隱藏的進場表單裡）有焦點的按鈕，否則會重新送出進場、看起來像被踢出去
+  if (joined && (k === ' ' || k === 'enter')) e.preventDefault();
   keys.add(k);
+  if (k === ' ' || k === 'j') keyAttack = true;
   if (k === 'k') castSkill(1);
   if (k === 'l') castSkill(2);
 });
-window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
-window.addEventListener('blur', () => keys.clear());
+window.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  keys.delete(k);
+  if (k === ' ' || k === 'j') keyAttack = false;
+});
+let keyAttack = false; // 空白鍵或 J 按住＝連續普攻
+window.addEventListener('blur', () => { keys.clear(); keyAttack = false; });
 function keyInput() {
   let x = 0, y = 0;
   if (keys.has('a') || keys.has('arrowleft')) x--;
@@ -650,6 +699,7 @@ for (const b of skillBtns) {
   const k = +b.dataset.k;
   b.addEventListener('pointerdown', (e) => {
     e.preventDefault();
+    b.blur();
     b.classList.add('held');
     if (k === 0) mainHeld = true;
     castSkill(k);
@@ -755,6 +805,10 @@ function updateHud(now) {
     const left = Math.max(0, Math.ceil(12 - (now - deadSince) / 1000));
     $('deadmsg').textContent = `你倒下了，${deadSince ? left + ' 秒後' : '稍後'}自動復活\n可以慢慢走去找補師救你`;
   }
+
+  const pingEl = $('ping');
+  pingEl.textContent = myRtt ? `${Math.round(myRtt)}ms・${fps}fps` : '';
+  pingEl.className = myRtt > 250 || fps < 30 ? 'bad' : myRtt > 120 || fps < 50 ? 'meh' : '';
 
   $('bossbar').hidden = !boss.alive;
   if (boss.alive) {
@@ -880,7 +934,7 @@ function drawTopAura(p, rank, now, feet) {
     // 旋轉彩虹光環：12 段不同色的弧
     const rot = now / 400;
     ctx.lineWidth = 5;
-    ctx.shadowBlur = 14;
+    ctx.shadowBlur = glow(14);
     for (let i = 0; i < 12; i++) {
       const c = `hsl(${(hue + i * 30) % 360} 100% 60%)`;
       ctx.strokeStyle = c; ctx.shadowColor = c;
@@ -891,7 +945,7 @@ function drawTopAura(p, rank, now, feet) {
   } else if (rank === 1) {
     const pulse = 1 + Math.sin(now / 150) * 0.12;
     const c = `hsl(${hue % 360} 100% 62%)`;
-    ctx.lineWidth = 4; ctx.strokeStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 18;
+    ctx.lineWidth = 4; ctx.strokeStyle = c; ctx.shadowColor = c; ctx.shadowBlur = glow(18);
     ctx.beginPath();
     ctx.ellipse(p.x, feet, r * 1.35 * pulse, r * 0.55 * pulse, 0, 0, Math.PI * 2);
     ctx.stroke();
@@ -912,7 +966,7 @@ function drawCrown(x, y, now) {
   ctx.beginPath();
   ctx.moveTo(-12, 0); ctx.lineTo(-12, -10); ctx.lineTo(-6, -4); ctx.lineTo(0, -13); ctx.lineTo(6, -4); ctx.lineTo(12, -10); ctx.lineTo(12, 0);
   ctx.closePath();
-  ctx.fillStyle = '#facc15'; ctx.shadowColor = '#fde047'; ctx.shadowBlur = 12; ctx.fill();
+  ctx.fillStyle = '#facc15'; ctx.shadowColor = '#fde047'; ctx.shadowBlur = glow(12); ctx.fill();
   ctx.shadowBlur = 0; ctx.lineWidth = 2; ctx.strokeStyle = '#92400e'; ctx.stroke();
   ctx.fillStyle = `hsl(${(now * 0.36) % 360} 100% 60%)`;
   ctx.beginPath(); ctx.arc(0, -5, 2.5, 0, Math.PI * 2); ctx.fill();
@@ -997,7 +1051,7 @@ function drawSpr(e, now) {
   if (now < e.born) return;
   const sh = fxSheets[e.sheet];
   if (!sh?.ready) return;
-  const t = Math.min(1, (now - e.born) / e.life);
+  const t = Math.max(0, Math.min(1, (now - e.born) / e.life));
   const frame = e.loop ? Math.floor((now - e.born) / 70) % 6 : Math.min(5, Math.floor(t * 6));
   const y = e.fall ? e.y - e.fall * (1 - t) : e.y;
   const cy = e.anchor === 'feet' ? y - e.size * 0.45 : y;
@@ -1013,7 +1067,7 @@ function drawSpr(e, now) {
 function drawGroundFx(now) {
   for (const e of effects) {
     if (e.k === 'spr') { if (e.layer === 'ground') drawSpr(e, now); continue; }
-    const t = Math.min(1, (now - e.born) / e.life);
+    const t = Math.max(0, Math.min(1, (now - e.born) / e.life));
     if (e.k === 'tele' && e.shape === 'circle') {
       ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(239, 68, 68, .15)'; ctx.fill();
@@ -1046,7 +1100,7 @@ function drawGroundFx(now) {
 function drawAirFx(now) {
   for (const e of effects) {
     if (e.k === 'spr') { if (e.layer !== 'ground') drawSpr(e, now); continue; }
-    const t = Math.min(1, (now - e.born) / e.life);
+    const t = Math.max(0, Math.min(1, (now - e.born) / e.life));
     if (e.k === 'wave' || e.k === 'boom') {
       ctx.beginPath(); ctx.arc(e.x, e.y, e.r * (0.6 + 0.4 * t), 0, Math.PI * 2);
       ctx.lineWidth = 10 * (1 - t) + 2;
@@ -1075,7 +1129,7 @@ function drawAirFx(now) {
       } else {
         ctx.beginPath(); ctx.arc(x, y, e.kind === 'magic' ? 9 : 7, 0, Math.PI * 2);
         ctx.fillStyle = e.kind === 'magic' ? '#93c5fd' : '#fef9c3';
-        ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 12; ctx.fill(); ctx.shadowBlur = 0;
+        ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = glow(12); ctx.fill(); ctx.shadowBlur = 0;
       }
     } else if (e.k === 'slash') {
       const p = players.get(e.id);
@@ -1142,7 +1196,7 @@ function drawOrbs(now) {
   for (const o of orbs.values()) {
     const bob = Math.sin(now / 300 + o.id) * 3;
     ctx.beginPath(); ctx.arc(o.x, o.y + bob, 14, 0, Math.PI * 2);
-    ctx.fillStyle = '#22c55e'; ctx.shadowColor = '#4ade80'; ctx.shadowBlur = 14; ctx.fill(); ctx.shadowBlur = 0;
+    ctx.fillStyle = '#22c55e'; ctx.shadowColor = '#4ade80'; ctx.shadowBlur = glow(14); ctx.fill(); ctx.shadowBlur = 0;
     ctx.fillStyle = '#fff';
     ctx.fillRect(o.x - 2.5, o.y + bob - 8, 5, 16);
     ctx.fillRect(o.x - 8, o.y + bob - 2.5, 16, 5);
@@ -1195,19 +1249,59 @@ function drawMinimap(v) {
   }
 }
 
-let prev = performance.now();
+// 自己的角色本地預測：照搖桿方向與職業速度先動，再慢慢對齊伺服器位置，延遲高時手感也是即時的；
+// 差太多（被 BOSS 推開、衝刺、閃現、復活）就直接校正
+function predictSelf(dt) {
+  const me = players.get(myId);
+  if (!me || !CLASSES) return;
+  const c = CLASSES[me.cls];
+  const r = topRank(myId);
+  const speed = c.speed * (me.flags & 1 ? 0.5 : 1) * (r >= 0 ? topBuff[r].speed : 1);
+  const [ix, iy] = moveDir();
+  me.x = Math.max(map.r, Math.min(map.w - map.r, me.x + ix * speed * dt));
+  me.y = Math.max(map.r, Math.min(map.h - map.r, me.y + iy * speed * dt));
+  if (Math.abs(ix) > 0.05) me.face = ix < 0 ? -1 : 1;
+  if (Math.hypot(ix, iy) > 0.05) me.movingUntil = performance.now() + 150;
+  const ex = me.tx - me.x, ey = me.ty - me.y, err = Math.hypot(ex, ey);
+  if (err > 160) { me.x = me.tx; me.y = me.ty; return; }
+  // 沒在推搖桿時對齊快一點，推搖桿時慢一點（伺服器位置本來就落後一個來回）
+  const pull = 1 - Math.exp(-dt * (Math.hypot(ix, iy) > 0.05 ? 3 : 10));
+  me.x += ex * pull; me.y += ey * pull;
+}
+
+let prev = performance.now(), frameErrors = 0;
 function frame(now) {
+  // 用 performance.now() 而不是 rAF 給的時間：rAF 的時間是這格開始的時間，可能比剛收到的訊息還早，
+  // 特效進度會變成負數（曾造成 arc 半徑為負、整個畫面停住）
+  now = performance.now();
+  try { drawFrameAll(now); } catch (e) {
+    if (frameErrors++ < 3) diag('frame-error', `${e.message} ${e.stack?.split('\n')[1]?.trim() ?? ''}`);
+  }
+  requestAnimationFrame(frame);
+}
+
+function drawFrameAll(now) {
   const dt = Math.min(0.1, (now - prev) / 1000);
   prev = now;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = '#0b1229';
   ctx.fillRect(0, 0, W, H);
+  fpsFrames++;
+  if (now - fpsAt >= 1000) {
+    fps = Math.round(fpsFrames * 1000 / (now - fpsAt)); fpsFrames = 0; fpsAt = now;
+    lowFxScore = Math.max(-3, Math.min(3, lowFxScore + (fps < 40 ? 1 : fps > 55 ? -1 : 0)));
+    if (lowFxScore >= 3) lowFx = true; else if (lowFxScore <= -3) lowFx = false;
+  }
   if (joined) {
     sendInput(now);
-    if (mainHeld) castSkill(0);
+    if (mainHeld || keyAttack) castSkill(0);
     // 平滑內插到伺服器位置
     const k = 1 - Math.exp(-dt * 14);
-    for (const p of players.values()) { p.x += (p.tx - p.x) * k; p.y += (p.ty - p.y) * k; }
+    for (const p of players.values()) {
+      if (p.id === myId) continue;
+      p.x += (p.tx - p.x) * k; p.y += (p.ty - p.y) * k;
+    }
+    predictSelf(dt);
     // BOSS 閃身步是瞬移：距離很遠就直接跳過去
     if (Math.hypot(boss.tx - boss.x, boss.ty - boss.y) > 200) { boss.x = boss.tx; boss.y = boss.ty; }
     else { boss.x += (boss.tx - boss.x) * k; boss.y += (boss.ty - boss.y) * k; }
@@ -1239,6 +1333,5 @@ function frame(now) {
     drawMinimap(v);
     updateHud(now);
   }
-  requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

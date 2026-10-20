@@ -121,6 +121,25 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...NO_CACHE });
     return res.end(JSON.stringify(CHARS));
   }
+  if (p === '/api/diag' && req.method === 'POST') {
+    // 前端回報的診斷（出錯、重新整理、被踢回進場畫面），只記在 log
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 2000) req.destroy(); });
+    req.on('end', () => {
+      try { const d = JSON.parse(body); console.log(`diag ${cleanText(d.name, 20) || '-'} ${cleanText(d.kind, 30)} ${cleanText(d.detail, 300)} joined=${!!d.joined} ua=${cleanText(d.ua, 120)}`); } catch {}
+      res.writeHead(204, NO_CACHE); res.end();
+    });
+    return;
+  }
+  if (p === '/api/netstats') {
+    const online = new Set([...players.values()].map((q) => nameKey(q.name)));
+    const list = [...netStats.entries()].map(([k, n]) => {
+      const q = [...players.values()].find((x) => nameKey(x.name) === k);
+      return { ...n, online: online.has(k), buffered: q ? q.ws.bufferedAmount : 0 };
+    }).sort((a, b) => b.online - a.online || b.rttAvg - a.rttAvg);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...NO_CACHE });
+    return res.end(JSON.stringify({ players: list, server: net.history.slice(-30) }, null, 1));
+  }
   if (p === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...NO_CACHE });
     return res.end(JSON.stringify({ ok: true, players: players.size, boss: { level: boss.level, hp: Math.round(boss.hp), alive: boss.alive } }));
@@ -195,8 +214,47 @@ function send(ws, msg) {
 }
 function broadcast(msg) {
   const data = JSON.stringify(msg);
-  for (const p of players.values()) if (p.ws.readyState === p.ws.OPEN) p.ws.send(data);
+  const bytes = Buffer.byteLength(data);
+  for (const p of players.values()) {
+    if (p.ws.readyState !== p.ws.OPEN) continue;
+    // 防卡：網路慢的手機傳送佇列積太多時，先跳過快照（快照是完整狀態，丟幾張沒關係），不要讓延遲越積越大
+    if (msg.t === 's' && p.ws.bufferedAmount > SEND_BACKLOG_MAX) { net.skipped++; netOf(p).skipped++; continue; }
+    p.ws.send(data);
+    net.bytes += bytes;
+  }
 }
+
+// ---------- 網路量測：每人延遲、FPS、斷線；伺服器每輪耗時與流量（/api/netstats） ----------
+const SEND_BACKLOG_MAX = 64 * 1024;
+const net = { bytes: 0, skipped: 0, tickMax: 0, tickSum: 0, ticks: 0, driftMax: 0, history: [] };
+const netStats = new Map();  // nameKey -> 每人統計（伺服器重啟才清空）
+function netOf(p) {
+  const key = nameKey(p.name);
+  let n = netStats.get(key);
+  if (!n) netStats.set(key, n = { name: p.name, rtt: 0, rttAvg: 0, rttMax: 0, jitter: 0, fps: 0, fpsMin: 0, samples: 0, skipped: 0, disconnects: 0, reasons: {}, ua: '' });
+  n.name = p.name;
+  return n;
+}
+function onPing(p, msg) {
+  send(p.ws, { t: 'pong', c: msg.c });
+  const n = netOf(p);
+  const rtt = Number(msg.rtt), fps = Number(msg.fps);
+  if (rtt > 0 && rtt < 60000) {
+    n.jitter = n.samples ? n.jitter * 0.8 + Math.abs(rtt - n.rtt) * 0.2 : 0;
+    n.rtt = Math.round(rtt);
+    n.rttAvg = n.samples ? Math.round(n.rttAvg * 0.9 + rtt * 0.1) : Math.round(rtt);
+    n.rttMax = Math.max(n.rttMax, Math.round(rtt));
+    n.samples++;
+  }
+  if (fps > 0) { n.fps = Math.round(fps); n.fpsMin = n.fpsMin ? Math.min(n.fpsMin, n.fps) : n.fps; }
+  if (msg.ua) n.ua = cleanText(msg.ua, 80);
+}
+// 每 10 秒記一筆伺服器狀態（保留 30 分鐘）
+setInterval(() => {
+  net.history.push({ t: Date.now(), players: players.size, kbps: Math.round(net.bytes / 1024 / 10), tickAvg: net.ticks ? +(net.tickSum / net.ticks).toFixed(1) : 0, tickMax: +net.tickMax.toFixed(1), driftMax: Math.round(net.driftMax), skipped: net.skipped });
+  if (net.history.length > 180) net.history.shift();
+  net.bytes = 0; net.skipped = 0; net.tickMax = 0; net.tickSum = 0; net.ticks = 0; net.driftMax = 0;
+}, 10000);
 const publicInfo = (p) => ({ id: p.id, name: p.name, hue: p.hue, cls: p.cls, char: p.char, lv: p.lv, maxHp: p.maxHp, maxMp: p.maxMp, x: Math.round(p.x), y: Math.round(p.y) });
 const power = (p) => 1 + lvMult.power * (p.lv - 1);
 
@@ -784,11 +842,16 @@ wss.on('connection', (ws) => {
     else if (msg.t === 'skill') useSkill(p, msg);
     else if (msg.t === 'chat') chat(p, msg);
     else if (msg.t === 'rank') sendRank(p);
+    else if (msg.t === 'ping') onPing(p, msg);
   });
   ws.on('close', (code) => {
     // 斷線紀錄：用來分辨是心跳逾時（手機在背景）、手機主動關閉、還是網路中斷
     if (ws.player) console.log(`close ${ws.player.name} code=${code}${ws.kickReason ? ` reason=${ws.kickReason}` : ''} after=${Math.round((Date.now() - ws.openedAt) / 1000)}s`);
-    if (ws.player) removePlayer(ws.player);
+    if (ws.player) {
+      const n = netOf(ws.player), why = `${code}${ws.kickReason ? `-${ws.kickReason}` : ''}`;
+      n.disconnects++; n.reasons[why] = (n.reasons[why] || 0) + 1;
+      removePlayer(ws.player);
+    }
   });
   ws.on('error', (e) => console.log(`ws error ${ws.player?.name ?? '-'}: ${e.message}`));
 });
@@ -812,6 +875,7 @@ let last = performance.now();
 setInterval(() => {
   const t = performance.now();
   const dt = Math.min(0.1, (t - last) / 1000);
+  net.driftMax = Math.max(net.driftMax, t - last - 1000 / TICK_HZ);  // 主迴圈晚了多久（伺服器忙不過來）
   last = t;
   const now = Date.now();
 
@@ -881,6 +945,8 @@ setInterval(() => {
     broadcast(msg);
   }
   fx = [];
+  const cost = performance.now() - t;
+  net.tickSum += cost; net.ticks++; net.tickMax = Math.max(net.tickMax, cost);
 }, 1000 / TICK_HZ);
 
 // ---------- 存檔：伺服器重啟（部署）不會讓大家掉等級 ----------
