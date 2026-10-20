@@ -163,7 +163,7 @@ function saveToken(t) {
   try { localStorage.setItem(tokenKey(), t); } catch { try { sessionStorage.setItem(tokenKey(), t); } catch {} }
 }
 
-let lastMsgAt = 0;
+let lastMsgAt = 0, retries = 0;
 function connect() {
   if (ws) { ws.onclose = null; ws.onmessage = null; try { ws.close(); } catch {} }
   clearTimeout(reconnectTimer);
@@ -175,12 +175,15 @@ function connect() {
     setStatus(true);
     sock.send(JSON.stringify({ t: 'join', name: myName, cls: myCls, token: loadToken() }));
   };
-  sock.onmessage = (e) => { lastMsgAt = performance.now(); handle(JSON.parse(e.data)); };
-  sock.onclose = () => {
+  sock.onmessage = (e) => { lastMsgAt = performance.now(); retries = 0; handle(JSON.parse(e.data)); };
+  sock.onclose = (e) => {
     if (ws !== sock) return;
     setStatus(false);
+    // 4001：同一個 ID 在別的分頁或裝置登入，這邊停止重連，不然兩邊會無限互踢
+    if (e.code === 4001) { kickedOut('這個 ID 在別的分頁或裝置登入了'); return; }
     // 已進入遊戲的人自動重連
-    if (joined) reconnectTimer = setTimeout(connect, 1500);
+    // 第一次 0.5 秒後重連，之後逐步拉長到最多 5 秒（伺服器重啟期間不要狂敲）
+    if (joined) reconnectTimer = setTimeout(connect, Math.min(5000, 500 * 2 ** retries++));
   };
 }
 
@@ -197,6 +200,15 @@ document.addEventListener('visibilitychange', () => {
   if (ws?.readyState !== 1 || performance.now() - lastMsgAt > 1500) connect();
 });
 window.addEventListener('online', () => { if (joined) connect(); });
+
+function kickedOut(msg) {
+  joined = false;
+  clearTimeout(reconnectTimer);
+  if (ws) { ws.onclose = null; try { ws.close(); } catch {} }
+  $('netmsg').hidden = true;
+  $('joinerr').textContent = msg;
+  $('join').classList.remove('hidden');
+}
 
 function setStatus(on) {
   $('dot').classList.toggle('on', on);
@@ -225,6 +237,7 @@ function handle(m) {
       $('join').classList.remove('hidden');
       break;
     case 'ver': if (myVer && m.v !== myVer) reloadForUpdate(); break;
+    case 'kicked': kickedOut(m.msg); break;
     case 'welcome': {
       // 斷線重連時發現伺服器已經是新版（例如部署重啟），也要重新整理
       if (myVer && m.ver && m.ver !== myVer) return reloadForUpdate();

@@ -12,3 +12,5 @@ services:
         required: false
     volumes:
       - ./html:/app/html:ro
+      # 存檔（排行榜、等級、離線保留），伺服器重啟不會掉資料
+      - ./data:/app/data

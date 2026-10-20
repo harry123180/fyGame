@@ -230,7 +230,10 @@ function join(ws, msg) {
     if (old) {
       prev = old;
       removePlayer(old, false);
-      old.ws.terminate();
+      // 被同一個 ID 的新連線取代（另一個分頁、PWA、另一台裝置）：用 4001 關閉，舊的那邊就不會再自動重連搶回來
+      old.ws.kickReason = 'replaced';
+      send(old.ws, { t: 'kicked', msg: '這個 ID 在別的分頁或裝置登入了' });
+      old.ws.close(4001, 'replaced');
     }
   } else {
     const off = offline.get(key);
@@ -261,7 +264,7 @@ function join(ws, msg) {
   ws.player = p;
   players.set(p.id, p);
   sessions.set(key, { token, id: p.id });
-  if (!boss.alive && boss.level === 0) spawnBoss();
+  if (!boss.alive && (boss.level === 0 || boss.respawnAt === 0)) spawnBoss();
   // 戰鬥中有新玩家加入（不是重連），BOSS 的 HP 跟著加，人多人少都打得夠久
   else if (boss.alive && !prev) {
     const add = Math.round(BOSS.hpPerPlayer * (1 + 0.25 * (boss.level - 1)));
@@ -749,6 +752,7 @@ function sendRank(p) {
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 4096 });
 wss.on('connection', (ws) => {
   ws.alive = true;
+  ws.openedAt = Date.now();
   ws.on('pong', () => { ws.alive = true; });
   ws.on('message', (raw) => {
     let msg;
@@ -761,7 +765,12 @@ wss.on('connection', (ws) => {
     else if (msg.t === 'chat') chat(p, msg);
     else if (msg.t === 'rank') sendRank(p);
   });
-  ws.on('close', () => { if (ws.player) removePlayer(ws.player); });
+  ws.on('close', (code) => {
+    // 斷線紀錄：用來分辨是心跳逾時（手機在背景）、手機主動關閉、還是網路中斷
+    if (ws.player) console.log(`close ${ws.player.name} code=${code}${ws.kickReason ? ` reason=${ws.kickReason}` : ''} after=${Math.round((Date.now() - ws.openedAt) / 1000)}s`);
+    if (ws.player) removePlayer(ws.player);
+  });
+  ws.on('error', (e) => console.log(`ws error ${ws.player?.name ?? '-'}: ${e.message}`));
 });
 
 setInterval(() => {
@@ -772,7 +781,7 @@ setInterval(() => {
 // 心跳：30 秒沒回應就斷線（也讓 Cloudflare tunnel 不會因閒置斷開）
 setInterval(() => {
   for (const ws of wss.clients) {
-    if (!ws.alive) { ws.terminate(); continue; }
+    if (!ws.alive) { ws.kickReason = 'heartbeat'; ws.terminate(); continue; }
     ws.alive = false;
     ws.ping();
   }
@@ -853,5 +862,41 @@ setInterval(() => {
   }
   fx = [];
 }, 1000 / TICK_HZ);
+
+// ---------- 存檔：伺服器重啟（部署）不會讓大家掉等級 ----------
+// 每 15 秒、以及關機前，把排行榜、離線保留、在線玩家（當成離線保留）、BOSS 輪數寫到 data/state.json；
+// 啟動時讀回來，手機自動重連時用原本的 token 接回角色
+const STATE_FILE = path.resolve('data', 'state.json');
+const snapOf = (p) => ({ cls: p.cls, lv: p.lv, exp: p.exp, hp: p.hp, mp: p.mp, dead: p.dead, deadUntil: p.deadUntil, cds: p.cds, x: p.x, y: p.y });
+
+function saveState() {
+  const off = Object.fromEntries(offline);
+  const now = Date.now();
+  for (const p of players.values()) {
+    const key = nameKey(p.name), sess = sessions.get(key);
+    if (sess) off[key] = { token: sess.token, snap: snapOf(p), until: now + OFFLINE_KEEP_MS };
+  }
+  const data = { savedAt: now, stats: Object.fromEntries(stats), offline: off, bossLevel: boss.level };
+  try {
+    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+    fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(data));
+    fs.renameSync(STATE_FILE + '.tmp', STATE_FILE);   // 先寫暫存檔再改名，寫到一半當機也不會壞檔
+  } catch (e) { console.error('save state:', e.message); }
+}
+
+function loadState() {
+  try {
+    const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    for (const [k, v] of Object.entries(data.stats || {})) stats.set(k, v);
+    for (const [k, v] of Object.entries(data.offline || {})) if (v.until > Date.now()) offline.set(k, v);
+    // BOSS 從同一輪重新開始（滿血），等第一個人進場
+    if (data.bossLevel > 0) { boss.level = data.bossLevel - 1; boss.respawnAt = 0; }
+    console.log(`state loaded: ${stats.size} stats, ${offline.size} offline, boss level ${data.bossLevel}`);
+  } catch (e) { if (e.code !== 'ENOENT') console.error('load state:', e.message); }
+}
+
+loadState();
+setInterval(saveState, 15000);
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { saveState(); process.exit(0); });
 
 server.listen(PORT, () => console.log(`fygame listening on :${PORT}`));
