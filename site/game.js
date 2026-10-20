@@ -257,7 +257,16 @@ function setStatus(on) {
 
 // ---------- 自動更新 ----------
 // 部署新版後伺服器會通知；重新整理後用同一個 ID、職業自動進場（token 在 localStorage，會接回原本的角色）
-let myVer = '';
+let myVer = '', justUpdated = false;
+// 網頁一打開就記住自己是哪一版（deploy.sh 寫的 version.txt），之後跟伺服器比對
+const fetchVer = () => fetch('version.txt', { cache: 'no-store' }).then((r) => (r.ok ? r.text() : '')).then((v) => v.trim()).catch(() => '');
+fetchVer().then((v) => { if (!myVer) myVer = v; });
+// 還停在進場畫面（沒有 WebSocket 通知）時，每 5 秒自己檢查一次，有新版就直接重新整理
+setInterval(async () => {
+  if (joined || !myVer || document.visibilityState !== 'visible') return;
+  const v = await fetchVer();
+  if (v && v !== myVer) location.reload();
+}, 5000);
 function reloadForUpdate() {
   try { sessionStorage.setItem('autojoin', JSON.stringify({ name: myName, cls: myCls, char: myChar })); } catch {}
   joined = false;
@@ -281,7 +290,8 @@ function handle(m) {
     case 'welcome': {
       // 斷線重連時發現伺服器已經是新版（例如部署重啟），也要重新整理
       if (myVer && m.ver && m.ver !== myVer) return reloadForUpdate();
-      myVer = m.ver;
+      myVer = m.ver || myVer;
+      if (justUpdated) { justUpdated = false; setTimeout(() => toast('已更新到最新版'), 300); }
       joined = true; myId = m.id; map = m.map; CLASSES = m.classes; CHARS = m.chars; bossCfg = m.bossCfg;
       saveToken(m.token);
       try { localStorage.setItem('lastName', myName); } catch {}
@@ -542,6 +552,7 @@ try {
   if (auto?.name) {
     myName = auto.name; myCls = auto.cls || myCls; myChar = auto.char || myChar;
     $('joinerr').textContent = '已更新，重新進場中…';
+    justUpdated = true;
     connect();
   }
 } catch {}
