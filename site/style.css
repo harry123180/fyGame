@@ -156,3 +156,13 @@ body.typing #skills { display: none; }
 
 /* 斷線提示 */
 #netmsg { position: fixed; left: 50%; top: calc(var(--sa-t) + 64px); transform: translateX(-50%); background: rgba(185, 28, 28, .9); padding: 6px 16px; border-radius: 999px; font-size: var(--fs); pointer-events: none; z-index: 5; }
+
+/* 選角色 */
+#chars { display: grid; grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 6px; }
+.char { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px; border-radius: 12px; border: 2px solid var(--line); background: #1e293b; color: var(--text); font-weight: 400; font-size: 12px; }
+.char img { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; }
+.char.on { border-color: var(--accent); background: #3b3413; font-weight: 700; }
+@media (orientation: landscape) and (max-height: 500px) {
+  #chars { grid-template-columns: repeat(9, 1fr); }
+  .char img { width: 36px; height: 36px; }
+}

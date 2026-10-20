@@ -12,8 +12,8 @@ const VIEW_SHORT_SIDE = 640; // 螢幕短邊固定看到約這麼多世界單位
 const FONT = 'system-ui, -apple-system, "PingFang TC", "Noto Sans TC", sans-serif';
 
 let ws = null, myId = null, map = { w: 2400, h: 1600, r: 22 };
-let joined = false, myName = '', myCls = 'warrior', reconnectTimer = null;
-let CLASSES = null, bossCfg = { name: 'BOSS', r: 60 };
+let joined = false, myName = '', myCls = 'warrior', myChar = 'nailong', reconnectTimer = null;
+let CLASSES = null, CHARS = null, bossCfg = { name: 'BOSS', r: 60 };
 const players = new Map(); // id -> { id, name, hue, cls, x, y, tx, ty, hp, mp, flags, ... }
 const orbs = new Map();
 const xpOrbs = new Map();    // 經驗球
@@ -52,10 +52,11 @@ if (/iphone|ipad|ipod/i.test(navigator.userAgent) && !standalone) $('iosinstall'
 // ---------- 精靈圖 ----------
 // 每張都是 4 欄；格子大小由圖寬 / 4 算出，腳底對齊在格子底部往上 2px（tools/make_sprite.py 的規則）
 // 職業圖 sprites/<職業>.png：3 列（待機、走路、攻擊）；沒有的話退回基礎奶龍 nailong.png（2 列）
-function loadSheet(src) {
-  const s = { img: new Image(), ready: false, size: 0, rows: 0, top: 0 };
+function loadSheet(src, cols = 4) {
+  const s = { img: new Image(), ready: false, failed: false, size: 0, rows: 0, top: 0 };
+  s.img.onerror = () => { s.failed = true; };
   s.img.onload = () => {
-    s.size = s.img.width / 4;
+    s.size = s.img.width / cols;
     s.rows = Math.round(s.img.height / s.size);
     // 量出第一列裡角色最高的位置（用來放血條和對話泡泡）
     const c = document.createElement('canvas');
@@ -83,9 +84,23 @@ const sheets = {
   boss: loadSheet('sprites/boss.png'),
   ball: loadSheet('sprites/ball.png'),
 };
+// 技能特效精靈圖：每張 6 欄，每列一個特效（出現→最大→消散），由 codex 生成、make_sprite.py --align none 後製
+const fxSheets = Object.fromEntries(['warrior', 'archer', 'mage', 'healer', 'boss', 'cast']
+  .map((k) => [k, loadSheet(`sprites/fx/fx_${k}.png`, 6)]));
 const PLAYER_CELL = 76;   // 玩家一格在世界裡的大小（40px 圖 × 1.9）
 const BOSS_CELL = 240;    // BOSS 一格在世界裡的大小（約玩家的 3 倍）
-const sheetFor = (cls) => (sheets[cls]?.ready ? sheets[cls] : sheets.base);
+// 角色＋職業的精靈圖：吉伊卡哇等角色在 sprites/<角色>/<職業>.png，用到時才載入；
+// 還沒生成好（載入失敗）時退回奶龍的職業圖，再退回基礎奶龍
+const charSheets = {};
+function sheetFor(cls, char = 'nailong') {
+  if (char && char !== 'nailong') {
+    const key = `${char}/${cls}`;
+    const s = charSheets[key] ??= loadSheet(`sprites/${key}.png`);
+    if (s.ready) return s;
+  }
+  return sheets[cls]?.ready ? sheets[cls] : sheets.base;
+}
+const charName = (char) => CHARS?.[char]?.name ?? '奶龍';
 // BOSS 各招的動畫長度（毫秒），4 格平均分配
 const BOSS_ANIM_MS = [0, 1300, 1800, 1400];
 
@@ -117,7 +132,32 @@ $('chatinput').addEventListener('blur', () => document.body.classList.remove('ty
 
 // ---------- 選職業 ----------
 fetch('api/classes').then((r) => r.json()).then((c) => { CLASSES = c; renderClassCards(); }).catch(() => {});
-try { myCls = localStorage.getItem('lastCls') || myCls; } catch {}
+fetch('api/chars').then((r) => r.json()).then((c) => { CHARS = c; renderCharCards(); renderClassCards(); }).catch(() => {});
+try { myCls = localStorage.getItem('lastCls') || myCls; myChar = localStorage.getItem('lastChar') || myChar; } catch {}
+
+function renderCharCards() {
+  if (!CHARS) return;
+  const box = $('chars');
+  box.replaceChildren();
+  for (const [key, c] of Object.entries(CHARS)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'char' + (key === myChar ? ' on' : '');
+    const img = document.createElement('img');
+    img.src = `sprites/chars/${key}.png`;
+    img.alt = '';
+    const name = document.createElement('span');
+    name.textContent = c.name;
+    b.append(img, name);
+    b.addEventListener('click', () => {
+      myChar = key;
+      try { localStorage.setItem('lastChar', key); } catch {}
+      renderCharCards();
+      renderClassCards();
+    });
+    box.append(b);
+  }
+}
 
 function renderClassCards() {
   if (!CLASSES) return;
@@ -129,7 +169,7 @@ function renderClassCards() {
     b.className = 'cls' + (key === myCls ? ' on' : '');
     const cv = document.createElement('canvas');
     cv.width = 48; cv.height = 48;
-    const s = sheetFor(key);
+    const s = sheetFor(key, myChar);
     if (s.ready) {
       const g = cv.getContext('2d');
       g.imageSmoothingEnabled = false;
@@ -137,7 +177,7 @@ function renderClassCards() {
     }
     const t = document.createElement('div');
     const name = document.createElement('b');
-    name.textContent = `${c.name}奶龍`;
+    name.textContent = `${c.name}${charName(myChar)}`;
     const role = document.createElement('small');
     role.textContent = `${c.role}｜HP ${c.hp}・MP ${c.mp}`;
     const desc = document.createElement('small');
@@ -173,7 +213,7 @@ function connect() {
   lastMsgAt = performance.now();
   sock.onopen = () => {
     setStatus(true);
-    sock.send(JSON.stringify({ t: 'join', name: myName, cls: myCls, token: loadToken() }));
+    sock.send(JSON.stringify({ t: 'join', name: myName, cls: myCls, char: myChar, token: loadToken() }));
   };
   sock.onmessage = (e) => { lastMsgAt = performance.now(); retries = 0; handle(JSON.parse(e.data)); };
   sock.onclose = (e) => {
@@ -219,7 +259,7 @@ function setStatus(on) {
 // 部署新版後伺服器會通知；重新整理後用同一個 ID、職業自動進場（token 在 localStorage，會接回原本的角色）
 let myVer = '';
 function reloadForUpdate() {
-  try { sessionStorage.setItem('autojoin', JSON.stringify({ name: myName, cls: myCls })); } catch {}
+  try { sessionStorage.setItem('autojoin', JSON.stringify({ name: myName, cls: myCls, char: myChar })); } catch {}
   joined = false;
   ws.onclose = null;
   ws.close();
@@ -242,7 +282,7 @@ function handle(m) {
       // 斷線重連時發現伺服器已經是新版（例如部署重啟），也要重新整理
       if (myVer && m.ver && m.ver !== myVer) return reloadForUpdate();
       myVer = m.ver;
-      joined = true; myId = m.id; map = m.map; CLASSES = m.classes; bossCfg = m.bossCfg;
+      joined = true; myId = m.id; map = m.map; CLASSES = m.classes; CHARS = m.chars; bossCfg = m.bossCfg;
       saveToken(m.token);
       try { localStorage.setItem('lastName', myName); } catch {}
       players.clear(); orbs.clear(); xpOrbs.clear(); balls.length = 0; effects.length = 0;
@@ -303,8 +343,55 @@ function setBoss(b, snap) {
 }
 
 // ---------- 特效事件 ----------
+// 加一個精靈圖特效。anchor：center（以 x,y 為中心）或 feet（圖的底部貼在 y）；layer：ground 畫在角色下面
+function spr(sheet, row, x, y, size, life, now, o = {}) {
+  effects.push({ k: 'spr', sheet, row, x, y, size, life, born: now + (o.delay || 0), anchor: o.anchor || 'center', layer: o.layer || 'air', loop: o.loop, flip: o.flip, fall: o.fall });
+}
+
+// 施放特效：出手當下在施法者身上
+function castFx(p, skill, now) {
+  const feet = p.y + map.r;
+  if (p.cls === 'warrior' && skill === 0) spr('cast', 0, p.x + p.face * 24, p.y - 10, 90, 300, now, { flip: p.face < 0 });
+  else if (p.cls === 'archer' && skill < 2) spr('cast', 1, p.x + p.face * 22, p.y - 14, 80, 320, now);
+  else if (p.cls === 'mage' && skill < 2) spr('cast', 2, p.x, feet + 8, 120, 420, now, { anchor: 'feet', layer: 'ground' });
+  else if (p.cls === 'healer') spr('cast', 3, p.x, feet + 8, 120, 420, now, { anchor: 'feet', layer: 'ground' });
+}
+
 function onFx(f, now) {
   const p = f.id != null ? players.get(f.id) : null;
+  // 華麗特效（精靈圖）；原本的圓圈與線條保留，因為它們標示的是實際的判定範圍
+  switch (f.k) {
+    case 'atk': if (p) castFx(p, f.s, now); break;
+    case 'slash': {
+      const flip = p ? p.x > f.x : false;
+      spr('warrior', 0, f.x + (flip ? 30 : -30), f.y - 40, 160, 320, now, { flip });
+      spr('cast', 4, f.x, f.y - 50, 100, 300, now, { delay: 60 });
+      break;
+    }
+    case 'taunt': if (p) spr('warrior', 1, p.x, p.y - 10, 220, 600, now); break;
+    case 'dash':
+      if (f.kind === 'charge') spr('warrior', 2, f.x, f.y + map.r + 6, 130, 450, now, { anchor: 'feet', layer: 'ground', flip: f.dx < 0 });
+      else spr('archer', 2, f.x, f.y - 6, 120, 450, now);
+      break;
+    case 'proj':
+      // 飛到 BOSS 時播命中特效（延後 dur 才出現）
+      if (f.kind === 'arrow') spr('archer', 1, boss.x, boss.y - 50, 110, 350, now, { delay: f.dur });
+      else spr('cast', 5, boss.x, boss.y - 50, 100, 320, now, { delay: f.dur });
+      break;
+    case 'mark': spr('mage', 1, f.x, f.y - 30, 130, f.dur, now, { fall: 420 }); break;
+    case 'boom': spr('mage', 2, f.x, f.y - 30, f.r * 2.4, 520, now); break;
+    case 'blink':
+      spr('mage', 3, f.x1, f.y1 + map.r + 8, 110, 420, now, { anchor: 'feet', layer: 'ground' });
+      spr('mage', 3, f.x2, f.y2 + map.r + 8, 110, 420, now, { anchor: 'feet', layer: 'ground' });
+      break;
+    case 'healwave': spr('healer', 1, f.x, f.y + map.r, f.r * 1.6, 650, now, { anchor: 'feet' }); break;
+    case 'revive': if (p) spr('healer', 2, p.x, p.y + map.r + 6, 140, 900, now, { anchor: 'feet' }); break;
+    case 'wave':
+      if (f.kind === 'bear') spr('boss', 0, f.x, f.y + bossCfg.r * 0.6, f.r * 2.3, 520, now, { layer: 'ground' });
+      else if (f.kind === 'flash') spr('boss', 1, f.x, f.y + bossCfg.r * 0.6 + 10, 260, 520, now, { anchor: 'feet' });
+      break;
+    case 'lv': if (p) spr('boss', 2, p.x, p.y + map.r + 6, 140, 900, now, { anchor: 'feet' }); break;
+  }
   switch (f.k) {
     case 'atk': if (p) { p.atkUntil = now + 400; p.face = boss.x < p.x ? -1 : 1; } break;
     case 'ball': balls.push({ ...f, born: now }); break;
@@ -453,7 +540,7 @@ try {
   const auto = JSON.parse(sessionStorage.getItem('autojoin') || 'null');
   sessionStorage.removeItem('autojoin');
   if (auto?.name) {
-    myName = auto.name; myCls = auto.cls || myCls;
+    myName = auto.name; myCls = auto.cls || myCls; myChar = auto.char || myChar;
     $('joinerr').textContent = '已更新，重新進場中…';
     connect();
   }
@@ -603,7 +690,7 @@ function renderRank() {
     const no = document.createElement('span'); no.className = 'no'; no.textContent = i + 1;
     const who = document.createElement('span'); who.className = 'who';
     who.textContent = `Lv.${r.lv ?? 1} ${r.name}`;
-    const cls = document.createElement('small'); cls.textContent = CLASSES?.[r.cls]?.name ?? '';
+    const cls = document.createElement('small'); cls.textContent = `${CLASSES?.[r.cls]?.name ?? ''}${charName(r.char)}`;
     who.append(cls);
     const v = document.createElement('span'); v.className = 'v'; v.textContent = r.v.toLocaleString('zh-TW');
     li.append(no, who, v);
@@ -616,8 +703,8 @@ function renderRank() {
 
 // 頭像：目前職業精靈圖的第一格
 let avatarKey = '';
-function drawAvatar(cls) {
-  const s = sheetFor(cls);
+function drawAvatar(cls, char) {
+  const s = sheetFor(cls, char);
   const key = `${cls}:${s.ready}:${s.img.src}`;
   if (key === avatarKey || !s.ready) return;
   avatarKey = key;
@@ -632,9 +719,9 @@ function updateHud(now) {
   const me = players.get(myId);
   if (!me || !CLASSES) return;
   const c = CLASSES[me.cls];
-  drawAvatar(me.cls);
+  drawAvatar(me.cls, me.char);
   $('statname').textContent = `Lv.${me.lv} ${me.name}`;
-  $('statcls').textContent = `${c.name}奶龍`;
+  $('statcls').textContent = `${c.name}${charName(me.char)}`;
   $('hpfill').style.width = `${me.hp / me.maxHp * 100}%`;
   $('hpfill').parentElement.classList.toggle('low', me.hp / me.maxHp < 0.3);
   $('hptext').textContent = `HP ${me.hp} / ${me.maxHp}`;
@@ -834,7 +921,7 @@ function drawPlayer(p, now) {
   const rank = topRank(p.id);
   if (rank >= 0 && !dead) drawTopAura(p, rank, now, feet);
 
-  const s = sheetFor(p.cls);
+  const s = sheetFor(p.cls, p.char);
   ctx.save();
   if (dead) ctx.globalAlpha = 0.35;
   else if (inv && Math.floor(now / 80) % 2) ctx.globalAlpha = 0.5;
@@ -895,9 +982,26 @@ function drawBoss(now) {
   }
 }
 
+function drawSpr(e, now) {
+  if (now < e.born) return;
+  const sh = fxSheets[e.sheet];
+  if (!sh?.ready) return;
+  const t = Math.min(1, (now - e.born) / e.life);
+  const frame = e.loop ? Math.floor((now - e.born) / 70) % 6 : Math.min(5, Math.floor(t * 6));
+  const y = e.fall ? e.y - e.fall * (1 - t) : e.y;
+  const cy = e.anchor === 'feet' ? y - e.size * 0.45 : y;
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.translate(e.x, cy);
+  if (e.flip) ctx.scale(-1, 1);
+  ctx.drawImage(sh.img, frame * sh.size, e.row * sh.size, sh.size, sh.size, -e.size / 2, -e.size / 2, e.size, e.size);
+  ctx.restore();
+}
+
 // 地上的特效（畫在角色下面）：預警、震波、補血範圍
 function drawGroundFx(now) {
   for (const e of effects) {
+    if (e.k === 'spr') { if (e.layer === 'ground') drawSpr(e, now); continue; }
     const t = Math.min(1, (now - e.born) / e.life);
     if (e.k === 'tele' && e.shape === 'circle') {
       ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2);
@@ -930,6 +1034,7 @@ function drawGroundFx(now) {
 // 空中的特效（畫在角色上面）
 function drawAirFx(now) {
   for (const e of effects) {
+    if (e.k === 'spr') { if (e.layer !== 'ground') drawSpr(e, now); continue; }
     const t = Math.min(1, (now - e.born) / e.life);
     if (e.k === 'wave' || e.k === 'boom') {
       ctx.beginPath(); ctx.arc(e.x, e.y, e.r * (0.6 + 0.4 * t), 0, Math.PI * 2);
@@ -942,7 +1047,14 @@ function drawAirFx(now) {
       const mx = (e.x1 + tx) / 2 - (ty - e.y1) * e.spread, my = (e.y1 + ty) / 2 + (tx - e.x1) * e.spread;
       const x = (1 - t) ** 2 * e.x1 + 2 * (1 - t) * t * mx + t * t * tx;
       const y = (1 - t) ** 2 * e.y1 + 2 * (1 - t) * t * my + t * t * ty;
-      if (e.kind === 'arrow') {
+      const projSheet = fxSheets[{ arrow: 'archer', magic: 'mage', light: 'healer' }[e.kind]];
+      if (projSheet?.ready) {
+        const ang = Math.atan2(ty - y, tx - x);
+        ctx.save(); ctx.translate(x, y); ctx.rotate(ang); ctx.imageSmoothingEnabled = false;
+        const sz = e.kind === 'arrow' ? 52 : 44;
+        ctx.drawImage(projSheet.img, (Math.floor((now - e.born) / 70) % 6) * projSheet.size, 0, projSheet.size, projSheet.size, -sz / 2, -sz / 2, sz, sz);
+        ctx.restore();
+      } else if (e.kind === 'arrow') {
         const ang = Math.atan2(ty - y, tx - x);
         ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
         ctx.strokeStyle = '#fde68a'; ctx.lineWidth = 3;

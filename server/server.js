@@ -69,6 +69,20 @@ const CLASSES = {
 };
 const MELEE_RANGE = 90, SHOT_RANGE = 650;
 
+// ---------- 角色外觀（只影響外觀，不影響數值） ----------
+// 精靈圖：奶龍在 sprites/<職業>.png，其他角色在 sprites/<角色>/<職業>.png
+const CHARS = {
+  nailong: { name: '奶龍' },
+  chiikawa: { name: '吉伊卡哇' },
+  hachiware: { name: '小八' },
+  usagi: { name: '烏薩奇' },
+  kurimanju: { name: '栗子饅頭' },
+  rakko: { name: '海獺' },
+  momonga: { name: '小飛鼠' },
+  kani: { name: '小螃蟹' },
+  shisa: { name: '獅薩' },
+};
+
 // ---------- BOSS ----------
 // 三招都先顯示預警（紅色範圍）再造成傷害，玩家看到預警就能閃
 const BOSS = {
@@ -102,6 +116,10 @@ const server = http.createServer((req, res) => {
   if (p === '/api/classes') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...NO_CACHE });
     return res.end(JSON.stringify(CLASSES));
+  }
+  if (p === '/api/chars') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...NO_CACHE });
+    return res.end(JSON.stringify(CHARS));
   }
   if (p === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...NO_CACHE });
@@ -179,7 +197,7 @@ function broadcast(msg) {
   const data = JSON.stringify(msg);
   for (const p of players.values()) if (p.ws.readyState === p.ws.OPEN) p.ws.send(data);
 }
-const publicInfo = (p) => ({ id: p.id, name: p.name, hue: p.hue, cls: p.cls, lv: p.lv, maxHp: p.maxHp, maxMp: p.maxMp, x: Math.round(p.x), y: Math.round(p.y) });
+const publicInfo = (p) => ({ id: p.id, name: p.name, hue: p.hue, cls: p.cls, char: p.char, lv: p.lv, maxHp: p.maxHp, maxMp: p.maxMp, x: Math.round(p.x), y: Math.round(p.y) });
 const power = (p) => 1 + lvMult.power * (p.lv - 1);
 
 // 依等級重算 HP／MP 上限
@@ -218,6 +236,7 @@ function join(ws, msg) {
   const name = cleanText(msg.name, NAME_MAX);
   if (!name) return send(ws, { t: 'error', msg: '請輸入遊戲 ID' });
   const cls = CLASSES[msg.cls] ? msg.cls : 'warrior';
+  const char = CHARS[msg.char] ? msg.char : 'nailong';
   if (players.size >= MAX_PLAYERS) return send(ws, { t: 'error', msg: '人數已滿' });
 
   const key = nameKey(name);
@@ -250,7 +269,7 @@ function join(ws, msg) {
   const keep = prev && prev.cls === cls;
   const spawn = prev ?? randomSpawn();
   const p = {
-    id: nextId++, name, hue: hue(name), ws, cls,
+    id: nextId++, name, hue: hue(name), ws, cls, char,
     x: spawn.x, y: spawn.y, ix: 0, iy: 0, lastChat: 0,
     lv: prev?.lv ?? 1, exp: prev?.exp ?? 0, dealt: 0,
     maxHp: c.hp, maxMp: c.mp,
@@ -273,14 +292,14 @@ function join(ws, msg) {
 
   send(ws, {
     t: 'welcome', id: p.id, token, ver: siteVer, map: { w: MAP_W, h: MAP_H, r: RADIUS },
-    classes: CLASSES, boss: bossInfo(), bossCfg: { name: BOSS.name, r: BOSS.r, anims: BOSS_ANIMS },
+    classes: CLASSES, chars: CHARS, boss: bossInfo(), bossCfg: { name: BOSS.name, r: BOSS.r, anims: BOSS_ANIMS },
     players: [...players.values()].map(publicInfo), orbs: [...orbs.values()], xpOrbs: [...xpOrbs.values()], chat: chatLog,
     cds: p.cds.map((t) => Math.max(0, t - Date.now())), top3, topBuff: TOP_BUFF,
   });
   sendExp(p);
   broadcast({ t: 'join', p: publicInfo(p) });
   if (back) systemChat(`${name} 回來了`);
-  else if (!prev) systemChat(`${name}（${c.name}）加入了`);
+  else if (!prev) systemChat(`${name}（${c.name}${CHARS[char].name}）加入了`);
 }
 
 // 出生點：離 BOSS 有一段距離的地圖外圈
@@ -409,7 +428,7 @@ function statOf(p) {
   const key = nameKey(p.name);
   let st = stats.get(key);
   if (!st) stats.set(key, st = { name: p.name, dmg: 0, heal: 0 });
-  st.name = p.name; st.cls = p.cls; st.lv = p.lv;
+  st.name = p.name; st.cls = p.cls; st.char = p.char; st.lv = p.lv;
   return st;
 }
 
@@ -507,6 +526,7 @@ function useSkill(p, msg) {
       const dur = 250;
       p.dash = { vx: d.x * sk.dist / (dur / 1000), vy: d.y * sk.dist / (dur / 1000), until: now + dur, kind: sk.kind, dmg: (sk.dmg || 0) * power(p) };
       p.invulnUntil = now + dur + 150;
+      fx.push({ k: 'dash', id: p.id, kind: sk.kind, x: Math.round(p.x), y: Math.round(p.y), dx: +d.x.toFixed(2), dy: +d.y.toFixed(2) });
       break;
     }
     case 'blink': {
@@ -603,7 +623,7 @@ function bossAct(now) {
     fx.push({ k: 'tele', shape: 'circle', x: Math.round(boss.x), y: Math.round(boss.y), r: c.radius, dur: c.tele });
     later(c.tele, () => {
       if (!boss.alive) return;
-      fx.push({ k: 'wave', x: Math.round(boss.x), y: Math.round(boss.y), r: c.radius });
+      fx.push({ k: 'wave', x: Math.round(boss.x), y: Math.round(boss.y), r: c.radius, kind: 'bear' });
       const t = Date.now();
       for (const p of players.values()) if (dist(p, boss) <= c.radius + RADIUS) hurt(p, bossDmg(c.dmg), t);
     });
@@ -645,7 +665,7 @@ function bossAct(now) {
       if (!boss.alive) return;
       fx.push({ k: 'afterimage', x: Math.round(boss.x), y: Math.round(boss.y) });
       boss.x = dest.x; boss.y = dest.y;
-      fx.push({ k: 'wave', x: Math.round(boss.x), y: Math.round(boss.y), r: c.radius });
+      fx.push({ k: 'wave', x: Math.round(boss.x), y: Math.round(boss.y), r: c.radius, kind: 'flash' });
       const t = Date.now();
       for (const p of players.values()) if (dist(p, boss) <= c.radius + RADIUS) hurt(p, bossDmg(c.dmg), t);
     });
@@ -740,7 +760,7 @@ function sendRank(p) {
     const sorted = all.filter((st) => st[k] > 0).sort((a, b) => b[k] - a[k]);
     const mine = sorted.findIndex((st) => nameKey(st.name) === nameKey(p.name));
     return {
-      list: sorted.slice(0, RANK_TOP).map((st) => ({ name: st.name, cls: st.cls, lv: st.lv, v: Math.round(st[k]), on: st.on })),
+      list: sorted.slice(0, RANK_TOP).map((st) => ({ name: st.name, cls: st.cls, char: st.char, lv: st.lv, v: Math.round(st[k]), on: st.on })),
       me: mine < 0 ? null : { rank: mine + 1, v: Math.round(sorted[mine][k]) },
       total: sorted.length,
     };
