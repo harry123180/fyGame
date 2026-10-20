@@ -1,0 +1,7 @@
+2D pixel art game sprite animation, fixed static camera, solid flat magenta (#FF00FF) background for the entire video. The same single character from the first frame: a round fluffy pure white flying squirrel (head and body one round ball) with two big white ears with light blue insides, a light blue round nose spot, tiny black dot eyes, salmon-pink blush, thin black whiskers on the cheeks, and a big fluffy light blue tail at its back, wearing a small silver-grey knight helmet, a round wooden shield with a metal rim held in front of its body, and a short steel sword in its other hand, body turned sideways facing right. Always keep the big ears and the fluffy light blue tail clearly visible. Keep the exact same character design, pixel art style, chunky black outlines, colors, size and position as the first frame.
+[0s-0.6s] The flying squirrel raises the sword up behind its head, keeping the round shield in front of its body.
+[0.6s-1.2s] It swings the sword forward and down toward the right in a powerful slash, leaving a bright white curved arc trail of light.
+[1.2s-1.8s] The white slash arc fades and disappears, sword held low in front after the follow-through.
+[1.8s-2.5s] It brings the sword back and returns to the relaxed standing pose of the first frame.
+No other characters, no text, no UI, no camera movement, no background change, no shadows on the background, background stays pure magenta.
+Audio: metal sword swish and a sharp slash whoosh, no music, no voice.

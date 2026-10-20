@@ -1,0 +1,7 @@
+2D pixel art game sprite animation, fixed static camera, solid flat magenta (#FF00FF) background for the entire video. The same single character from the first frame: a round fluffy pure white flying squirrel (head and body one round ball) with two big white ears with light blue insides, a light blue round nose spot, tiny black dot eyes, salmon-pink blush, thin black whiskers on the cheeks, and a big fluffy light blue tail at its back, wearing a small white hood and shawl, holding a wooden staff topped with a green orb in its front hand, body turned sideways facing right. Always keep the big ears and the fluffy light blue tail clearly visible. Keep the exact same character design, pixel art style, chunky black outlines, colors, size and position as the first frame.
+[0s-0.6s] The flying squirrel raises the green orb staff up in front of it.
+[0.6s-1.2s] The green orb on top of the staff starts glowing brightly.
+[1.2s-1.9s] Many small bright green glowing dots and sparkles appear around the character and spread outward in a ring.
+[1.9s-2.5s] The green sparkles fade away and it lowers the staff, returning to the relaxed standing pose of the first frame.
+No other characters, no text, no UI, no camera movement, no background change, no shadows on the background, background stays pure magenta.
+Audio: soft gentle healing chime and twinkle, no music, no voice.

@@ -1,6 +1,7 @@
 // fyGame 多人伺服器：靜態檔（全部 no-store）＋ WebSocket /ws
 // 伺服器權威：客戶端只送搖桿方向與技能按鍵，位置、戰鬥、BOSS 都由伺服器計算後廣播
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -111,7 +112,7 @@ const NO_CACHE = {
   'Pragma': 'no-cache', 'Expires': '0',
 };
 
-const server = http.createServer((req, res) => {
+function handleRequest(req, res) {
   let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   if (p === '/api/classes') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...NO_CACHE });
@@ -167,7 +168,19 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', ...NO_CACHE });
     res.end(data);
   });
-});
+}
+const server = http.createServer(handleRequest);
+
+// ---------- HTTPS 直連（不經過 Cloudflare）：有憑證就在 TLS_PORT 開 HTTPS＋WebSocket ----------
+// 憑證由 certbot（Cloudflare DNS 驗證）申請，掛在 /app/certs；每 12 小時重讀一次，續期後不用重啟
+const TLS_PORT = Number(process.env.TLS_PORT) || 3443;
+const CERT_DIR = process.env.CERT_DIR || '/app/certs/live/fygame.qianpro.shop';
+const readCert = () => ({ cert: fs.readFileSync(path.join(CERT_DIR, 'fullchain.pem')), key: fs.readFileSync(path.join(CERT_DIR, 'privkey.pem')) });
+let tlsServer = null;
+try {
+  tlsServer = https.createServer(readCert(), handleRequest);
+  setInterval(() => { try { tlsServer.setSecureContext(readCert()); } catch (e) { console.error('cert reload:', e.message); } }, 12 * 3600 * 1000);
+} catch (e) { if (e.code !== 'ENOENT') console.error('tls:', e.message); }
 
 // ---------- 版本：部署後讓所有手機自動重新整理 ----------
 // deploy.sh 每次部署會寫入 html/version.txt；內容變了就廣播，客戶端看到新版本號就重新整理並自動重新進場
@@ -978,8 +991,11 @@ function readFeedback() {
 }
 
 // ---------- 連線 ----------
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 4096 });
-wss.on('connection', (ws) => {
+// 同一套處理接在 HTTP（Cloudflare tunnel）與 HTTPS（直連）兩個入口
+const wsServers = [new WebSocketServer({ server, path: '/ws', maxPayload: 4096 })];
+if (tlsServer) wsServers.push(new WebSocketServer({ server: tlsServer, path: '/ws', maxPayload: 4096 }));
+for (const wss of wsServers) wss.on('connection', onConnection);
+function onConnection(ws) {
   ws.alive = true;
   ws.openedAt = Date.now();
   ws.on('pong', () => { ws.alive = true; });
@@ -1007,7 +1023,7 @@ wss.on('connection', (ws) => {
     }
   });
   ws.on('error', (e) => console.log(`ws error ${ws.player?.name ?? '-'}: ${e.message}`));
-});
+}
 
 setInterval(() => {
   const now = Date.now();
@@ -1016,7 +1032,7 @@ setInterval(() => {
 
 // 心跳：30 秒沒回應就斷線（也讓 Cloudflare tunnel 不會因閒置斷開）
 setInterval(() => {
-  for (const ws of wss.clients) {
+  for (const ws of wsServers.flatMap((w) => [...w.clients])) {
     if (!ws.alive) { ws.kickReason = 'heartbeat'; ws.terminate(); continue; }
     ws.alive = false;
     ws.ping();
@@ -1153,3 +1169,4 @@ setInterval(saveState, 15000);
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { saveState(); process.exit(0); });
 
 server.listen(PORT, () => console.log(`fygame listening on :${PORT}`));
+if (tlsServer) tlsServer.listen(TLS_PORT, () => console.log(`fygame https listening on :${TLS_PORT}`));

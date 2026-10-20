@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:3190:3000"
+      # HTTPS 直連：路由器外部 443 → m8s 3443（UPnP，見 net/upnp.py）
+      - "3443:3443"
     # LLM_BASE_URL／LLM_MODEL／LLM_API_KEY（BOSS 聊天用），只放在伺服器上，不進 git
     env_file:
       - path: .env
@@ -14,3 +16,5 @@ services:
       - ./html:/app/html:ro
       # 存檔（排行榜、等級、離線保留），伺服器重啟不會掉資料
       - ./data:/app/data
+      # Let's Encrypt 憑證（certbot 申請，唯讀掛進來）
+      - ./letsencrypt:/app/certs:ro

@@ -12,7 +12,7 @@
 - `no-store` 是必要的：只送 `no-cache` 的話，Cloudflare 會把 js/css 改成 `max-age=14400`（zone 的 Browser Cache TTL），手機會吃到 4 小時前的舊版。cert.pem 的 token 沒有 Cache Rules 權限，只能從 origin 控制。
 - `deploy.sh` 另外會在 `index.html` 引用的本地 `.js`/`.css` 後面加 `?v=<時間戳>`，雙重保險。新增 js/css 時請放在 `index.html` 用 `src=`/`href=` 直接引用。
 - `site/sw.js` 只為了讓 PWA 可安裝：**不准用 Cache Storage**、fetch 一律 `cache: 'no-store'` 走網路。不要加離線快取、預先快取、`localStorage` 快取資源等任何會留舊版的機制。
-- 驗證：`curl -sI https://fygame.qianpro.shop/game.js` 要看到 `cf-cache-status: BYPASS`（html 是 `DYNAMIC`）且 Cache-Control 含 `no-store`。
+- 驗證：`curl -sI https://fygame.qianpro.shop/game.js` 的 Cache-Control 要含 `no-store`。（現在直連不經過 Cloudflare；若切回 tunnel，js 要看到 `cf-cache-status: BYPASS`、html 是 `DYNAMIC`）
 
 ### 2. 手機瀏覽器優先、PWA、響應式
 
@@ -58,7 +58,9 @@
 | 原始碼 | https://github.com/harry123180/fyGame（公開） |
 | 主機 | `harry-m8s-server`（`~/services/fygame`） |
 | 容器 | `fygame`（node:22-alpine + ws），`127.0.0.1:3190` → 3000；`html/` 為 bind mount |
-| 對外 | 本機 systemd cloudflared，tunnel `qianpro-tunnel`，`/etc/cloudflared/config.yml` |
+| 對外 | **直連**（2026-10-20 起）：DNS `fygame.qianpro.shop` A → 家用固定 IP 122.117.223.77（不經過 Cloudflare 代理，TTL 60）；路由器 TP-Link Archer AX73 用 UPnP 把外部 443 → m8s 3443；容器內 Node 直接提供 HTTPS（Let's Encrypt，Cloudflare DNS 驗證）。原因：Cloudflare 免費方案把台灣流量繞到美國，延遲 280ms → 直連 4～50ms |
+| 直連維運 | `~/services/fygame/net/`：`keep-port.sh`（cron 每 10 分鐘向路由器重新登記轉發）、`renew-cert.sh`（cron 每週一續期）、`upnp.py list/add/del`；憑證在 `~/services/fygame/letsencrypt/`；腳本副本在 repo 的 `ops/`。Cloudflare token 只在伺服器 `net/cf.ini`、`net/cf.json`（不進 git） |
+| 備援（還原成 Cloudflare） | tunnel `qianpro-tunnel` 的 ingress 仍保留 `fygame → localhost:3190`。直連出問題時在 m8s 執行 `cloudflared tunnel route dns --overwrite-dns qianpro-tunnel fygame.qianpro.shop` 就切回去（原紀錄備份在 `net/dns_backup.json`） |
 | BOSS 聊天 | LiteLLM（ai.qianpro.shop）`gemma4-31b`，專用 key alias `fygame-boss`；key 只在伺服器 `~/services/fygame/.env`，**不可進 git** |
 | 健康檢查 | `/healthz`；職業表 `/api/classes` |
 | 備援主機 | QianProServer（m8s 撐不住時再搬；3190 已被占用要換 port） |
