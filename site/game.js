@@ -23,6 +23,9 @@ const effects = [];        // 畫面特效（預警、震波、投射物、傷�
 const boss = { x: 1200, y: 800, tx: 1200, ty: 800, hp: 0, maxHp: 1, level: 0, alive: false, anim: 0, animStart: 0 };
 const cam = { x: 0, y: 0 };
 const readyAt = [0, 0, 0];
+const cdTotal = [0, 0, 0];   // 實際冷卻時間（前三名有冷卻縮減，以伺服器回的為準）
+let top3 = [], topBuff = [];
+const topRank = (id) => top3.indexOf(id); // -1 表示不在前三名
 let deadSince = 0;
 
 // ---------- PWA ----------
@@ -206,7 +209,8 @@ function handle(m) {
       for (const o of m.orbs) orbs.set(o.id, o);
       for (const o of m.xpOrbs) xpOrbs.set(o.id, o);
       setBoss(m.boss, true);
-      m.cds.forEach((ms, k) => { readyAt[k] = performance.now() + ms; });
+      m.cds.forEach((ms, k) => { readyAt[k] = performance.now() + ms; cdTotal[k] = ms; });
+      top3 = m.top3 || []; topBuff = m.topBuff || [];
       $('chatlog').replaceChildren();
       for (const c of m.chat) addChat(c, false);
       $('join').classList.add('hidden');
@@ -220,7 +224,7 @@ function handle(m) {
     case 'join': addPlayer(m.p); updateOnline(); break;
     case 'leave': players.delete(m.id); updateOnline(); break;
     case 'chat': addChat(m, true); break;
-    case 'cd': readyAt[m.k] = performance.now() + m.ms; break;
+    case 'cd': readyAt[m.k] = performance.now() + m.ms; cdTotal[m.k] = m.ms; break;
     case 'toast': toast(m.msg); break;
     case 'exp': myExp = m; break;
     case 'rank': rankData = m; renderRank(); break;
@@ -274,6 +278,13 @@ function onFx(f, now) {
       break;
     case 'down': if (f.id === myId) deadSince = now; break;
     case 'cast': bossCast(f.name, now); break;
+    case 'top': {
+      const was = topRank(myId);
+      top3 = f.ids;
+      const r = topRank(myId);
+      if (r >= 0 && r !== was) toast(`你是全服第 ${r + 1} 名！移速 +${Math.round((topBuff[r].speed - 1) * 100)}%、冷卻 -${Math.round((1 - topBuff[r].cd) * 100)}%`);
+      break;
+    }
     case 'bossspawn': banner(`第 ${f.level} 輪　${bossCfg.name}出現！`); break;
     case 'victory': banner(`擊敗${bossCfg.name}！`); break;
     case 'dmg':
@@ -512,7 +523,7 @@ for (const b of skillBtns) {
 }
 
 // ---------- 排行榜（點左上角頭像打開） ----------
-let rankData = null, rankTab = 'dmg', rankTimer = null;
+let rankData = null, rankTab = 'total', rankTimer = null;
 const requestRank = () => { if (ws?.readyState === 1) ws.send(JSON.stringify({ t: 'rank' })); };
 $('statpanel').addEventListener('click', () => {
   $('rank').hidden = false;
@@ -531,6 +542,8 @@ for (const b of document.querySelectorAll('#ranktabs button')) {
   });
 }
 
+const RANK_LABEL = { total: '綜合貢獻', dmg: '傷害', heal: '治療' };
+
 function renderRank() {
   if (!rankData) return;
   const d = rankData[rankTab];
@@ -539,7 +552,7 @@ function renderRank() {
   if (!d.list.length) {
     const li = document.createElement('li');
     li.className = 'empty';
-    li.textContent = rankTab === 'dmg' ? '還沒有人打到 BOSS' : '還沒有人補過血';
+    li.textContent = rankTab === 'heal' ? '還沒有人補過血' : '還沒有人打到 BOSS';
     list.append(li);
   }
   d.list.forEach((r, i) => {
@@ -556,8 +569,8 @@ function renderRank() {
     list.append(li);
   });
   $('rankme').textContent = d.me
-    ? `你是第 ${d.me.rank} 名（共 ${d.total} 人），${rankTab === 'dmg' ? '傷害' : '治療'} ${d.me.v.toLocaleString('zh-TW')}`
-    : `你還沒有${rankTab === 'dmg' ? '打到 BOSS' : '補過血'}`;
+    ? `你是第 ${d.me.rank} 名（共 ${d.total} 人），${RANK_LABEL[rankTab]} ${d.me.v.toLocaleString('zh-TW')}`
+    : `你還沒有${rankTab === 'heal' ? '補過血' : '打到 BOSS'}`;
 }
 
 // 頭像：目前職業精靈圖的第一格
@@ -593,6 +606,8 @@ function updateHud(now) {
   if (me.flags & 4) st.push('嘲諷中');
   if (me.flags & 8) st.push('減傷');
   if (me.flags & 2 && !(me.flags & 1)) st.push('無敵');
+  const tr = topRank(myId);
+  if (tr >= 0) st.push(`全服第 ${tr + 1} 名：移速 +${Math.round((topBuff[tr].speed - 1) * 100)}%、冷卻 -${Math.round((1 - topBuff[tr].cd) * 100)}%`);
   $('statstate').textContent = st.join('・');
 
   const dead = !!(me.flags & 1);
@@ -613,7 +628,8 @@ function updateHud(now) {
   for (const b of skillBtns) {
     const k = +b.dataset.k, sk = c.skills[k];
     const left = Math.max(0, readyAt[k] - now);
-    b.querySelector('.cd').style.setProperty('--p', sk.cd ? Math.min(1, left / sk.cd) : 0);
+    const total = cdTotal[k] || sk.cd;
+    b.querySelector('.cd').style.setProperty('--p', total ? Math.min(1, left / total) : 0);
     b.classList.toggle('nomp', me.mp < sk.mp || dead);
   }
 }
@@ -699,6 +715,71 @@ function bar(x, y, w, h, ratio, color) {
   ctx.fillRect(x - w / 2, y, w * Math.max(0, Math.min(1, ratio)), h);
 }
 
+// ---------- 全服前三名的彩虹特效 ----------
+// 第 1 名：彩虹光柱＋旋轉彩虹光環＋金皇冠＋快速流動的彩虹名字
+// 第 2 名：脈動發光的彩虹光圈＋閃爍的彩虹名字
+// 第 3 名：腳下彩虹光圈＋緩慢變色的彩虹名字
+const TOP_HUE_SPEED = [0.36, 0.2, 0.1]; // 每毫秒色相轉幾度
+
+function rainbowFill(x, w, now, rank) {
+  const g = ctx.createLinearGradient(x - w / 2, 0, x + w / 2, 0);
+  const base = now * TOP_HUE_SPEED[rank];
+  for (let i = 0; i <= 6; i++) g.addColorStop(i / 6, `hsl(${(base + i * 55) % 360} 100% ${rank === 1 && Math.floor(now / 120) % 2 ? 80 : 65}%)`);
+  return g;
+}
+
+function drawTopAura(p, rank, now, feet) {
+  const r = map.r, hue = now * TOP_HUE_SPEED[rank];
+  ctx.save();
+  if (rank === 0) {
+    // 光柱
+    const g = ctx.createLinearGradient(0, feet - 170, 0, feet);
+    g.addColorStop(0, `hsl(${hue % 360} 100% 70% / 0)`);
+    g.addColorStop(1, `hsl(${(hue + 60) % 360} 100% 70% / .35)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(p.x - r * 1.2, feet - 170, r * 2.4, 170);
+    // 旋轉彩虹光環：12 段不同色的弧
+    const rot = now / 400;
+    ctx.lineWidth = 5;
+    ctx.shadowBlur = 14;
+    for (let i = 0; i < 12; i++) {
+      const c = `hsl(${(hue + i * 30) % 360} 100% 60%)`;
+      ctx.strokeStyle = c; ctx.shadowColor = c;
+      ctx.beginPath();
+      ctx.ellipse(p.x, feet, r * 1.5, r * 0.6, 0, rot + i * Math.PI / 6, rot + (i + 0.8) * Math.PI / 6);
+      ctx.stroke();
+    }
+  } else if (rank === 1) {
+    const pulse = 1 + Math.sin(now / 150) * 0.12;
+    const c = `hsl(${hue % 360} 100% 62%)`;
+    ctx.lineWidth = 4; ctx.strokeStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 18;
+    ctx.beginPath();
+    ctx.ellipse(p.x, feet, r * 1.35 * pulse, r * 0.55 * pulse, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  } else {
+    ctx.lineWidth = 3; ctx.strokeStyle = `hsl(${hue % 360} 100% 60%)`;
+    ctx.beginPath();
+    ctx.ellipse(p.x, feet, r * 1.2, r * 0.48, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// 金皇冠（畫出來的，不用 emoji）
+function drawCrown(x, y, now) {
+  const bob = Math.sin(now / 200) * 2;
+  ctx.save();
+  ctx.translate(x, y + bob);
+  ctx.beginPath();
+  ctx.moveTo(-12, 0); ctx.lineTo(-12, -10); ctx.lineTo(-6, -4); ctx.lineTo(0, -13); ctx.lineTo(6, -4); ctx.lineTo(12, -10); ctx.lineTo(12, 0);
+  ctx.closePath();
+  ctx.fillStyle = '#facc15'; ctx.shadowColor = '#fde047'; ctx.shadowBlur = 12; ctx.fill();
+  ctx.shadowBlur = 0; ctx.lineWidth = 2; ctx.strokeStyle = '#92400e'; ctx.stroke();
+  ctx.fillStyle = `hsl(${(now * 0.36) % 360} 100% 60%)`;
+  ctx.beginPath(); ctx.arc(0, -5, 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
 function drawPlayer(p, now) {
   const r = map.r, feet = p.y + r, c = CLASSES?.[p.cls];
   const dead = p.flags & 1, inv = p.flags & 2;
@@ -709,6 +790,8 @@ function drawPlayer(p, now) {
   ctx.fill();
   if (p.flags & 4) { ctx.lineWidth = 3; ctx.strokeStyle = '#ef4444'; ctx.stroke(); }
   else if (p.id === myId) { ctx.lineWidth = 3; ctx.strokeStyle = '#ffffff'; ctx.stroke(); }
+  const rank = topRank(p.id);
+  if (rank >= 0 && !dead) drawTopAura(p, rank, now, feet);
 
   const s = sheetFor(p.cls);
   ctx.save();
@@ -736,13 +819,14 @@ function drawPlayer(p, now) {
     bar(p.x, top - 12, 38, 5, p.hp / p.maxHp, p.hp / p.maxHp < 0.3 ? '#ef4444' : '#22c55e');
     bar(p.x, top - 6, 38, 3, p.mp / p.maxMp, '#3b82f6');
   }
+  if (rank === 0 && !dead) { drawCrown(p.x, top - 16, now); p.headY = top - 32; }
   // 名字
   ctx.font = `bold 13px ${FONT}`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'top';
   ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0, 0, 0, .6)';
   const label = `Lv.${p.lv ?? 1} ${p.name}${dead ? '（倒地）' : ''}`;
   ctx.strokeText(label, p.x, feet + 10);
-  ctx.fillStyle = dead ? '#fca5a5' : '#fff';
+  ctx.fillStyle = dead ? '#fca5a5' : rank >= 0 ? rainbowFill(p.x, ctx.measureText(label).width, now, rank) : '#fff';
   ctx.fillText(label, p.x, feet + 10);
 }
 

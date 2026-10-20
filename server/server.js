@@ -135,6 +135,11 @@ const sessions = new Map();  // nameKey -> { token, id }
 // 排行榜：依 ID 累計對 BOSS 的傷害與治療量，離開再回來也不會歸零（伺服器重啟才清空）
 const stats = new Map();     // nameKey -> { name, cls, lv, dmg, heal }
 const RANK_TOP = 20;
+// 全服前三名（綜合貢獻 = 對 BOSS 傷害 + 治療量，只算在線的人）：移動速度與技能冷卻增幅，畫面上有彩虹特效
+const TOP_BUFF = [{ speed: 1.2, cd: 0.8 }, { speed: 1.15, cd: 0.85 }, { speed: 1.1, cd: 0.9 }];
+const TOP_EVERY_MS = 2000;
+let top3 = [], lastTopAt = 0;
+const buffOf = (p) => TOP_BUFF[top3.indexOf(p.id)] ?? null;
 const chatLog = [];
 const orbs = new Map();      // id -> { id, x, y }
 const xpOrbs = new Map();    // 經驗球 id -> { id, x, y }
@@ -255,7 +260,7 @@ function join(ws, msg) {
     t: 'welcome', id: p.id, token, ver: siteVer, map: { w: MAP_W, h: MAP_H, r: RADIUS },
     classes: CLASSES, boss: bossInfo(), bossCfg: { name: BOSS.name, r: BOSS.r, anims: BOSS_ANIMS },
     players: [...players.values()].map(publicInfo), orbs: [...orbs.values()], xpOrbs: [...xpOrbs.values()], chat: chatLog,
-    cds: p.cds.map((t) => Math.max(0, t - Date.now())),
+    cds: p.cds.map((t) => Math.max(0, t - Date.now())), top3, topBuff: TOP_BUFF,
   });
   sendExp(p);
   broadcast({ t: 'join', p: publicInfo(p) });
@@ -440,8 +445,9 @@ function useSkill(p, msg) {
   }
 
   p.mp -= sk.mp;
-  p.cds[k] = now + sk.cd;
-  send(p.ws, { t: 'cd', k, ms: sk.cd });
+  const cd = Math.round(sk.cd * (buffOf(p)?.cd ?? 1));
+  p.cds[k] = now + cd;
+  send(p.ws, { t: 'cd', k, ms: cd });
   fx.push({ k: 'atk', id: p.id, s: k });
 
   switch (sk.kind) {
@@ -687,13 +693,28 @@ function tickXpOrbs(now) {
   }
 }
 
+function tickTop3(now) {
+  if (now - lastTopAt < TOP_EVERY_MS) return;
+  lastTopAt = now;
+  const next = [...players.values()]
+    .map((p) => ({ p, v: (stats.get(nameKey(p.name))?.dmg ?? 0) + (stats.get(nameKey(p.name))?.heal ?? 0) }))
+    .filter((x) => x.v > 0)
+    .sort((a, b) => b.v - a.v)
+    .slice(0, 3)
+    .map((x) => x.p.id);
+  if (next.join() === top3.join()) return;
+  if (next[0] && next[0] !== top3[0]) systemChat(`${players.get(next[0]).name} 登上全服第 1 名！`);
+  top3 = next;
+  fx.push({ k: 'top', ids: top3 });
+}
+
 function sendRank(p) {
   const now = Date.now();
   if (now - (p.lastRank || 0) < 1000) return;
   p.lastRank = now;
   statOf(p);
   const online = new Set([...players.values()].map((q) => nameKey(q.name)));
-  const all = [...stats.entries()].map(([key, st]) => ({ ...st, on: online.has(key) }));
+  const all = [...stats.entries()].map(([key, st]) => ({ ...st, total: st.dmg + st.heal, on: online.has(key) }));
   const top = (k) => {
     const sorted = all.filter((st) => st[k] > 0).sort((a, b) => b[k] - a[k]);
     const mine = sorted.findIndex((st) => nameKey(st.name) === nameKey(p.name));
@@ -703,7 +724,7 @@ function sendRank(p) {
       total: sorted.length,
     };
   };
-  send(p.ws, { t: 'rank', dmg: top('dmg'), heal: top('heal') });
+  send(p.ws, { t: 'rank', total: top('total'), dmg: top('dmg'), heal: top('heal') });
 }
 
 // ---------- 連線 ----------
@@ -762,7 +783,7 @@ setInterval(() => {
         p.dash = null;
       }
     } else {
-      const speed = c.speed * (p.dead ? 0.5 : 1);  // 倒地時可以慢慢走去找補師
+      const speed = c.speed * (p.dead ? 0.5 : 1) * (buffOf(p)?.speed ?? 1);  // 倒地時可以慢慢走去找補師
       p.x += p.ix * speed * dt;
       p.y += p.iy * speed * dt;
     }
@@ -794,6 +815,7 @@ setInterval(() => {
   tickBalls(now, dt);
   tickOrbs(now);
   tickXpOrbs(now);
+  tickTop3(now);
 
   // 精簡格式：[id, x, y, hp, mp, flags, ...]；flags：1 倒地、2 無敵、4 嘲諷中、8 減傷
   if (list.length) {
