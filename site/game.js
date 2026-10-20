@@ -223,7 +223,7 @@ function connect() {
   lastMsgAt = performance.now();
   sock.onopen = () => {
     setStatus(true);
-    sock.send(JSON.stringify({ t: 'join', name: myName, cls: myCls, char: myChar, token: loadToken() }));
+    sock.send(JSON.stringify({ t: 'join', name: myName, cls: myCls, char: myChar, auto: autoAtk, token: loadToken() }));
   };
   sock.onmessage = (e) => { lastMsgAt = performance.now(); retries = 0; handle(JSON.parse(e.data)); };
   sock.onclose = (e) => {
@@ -492,6 +492,22 @@ let soundOn = true;
 try { soundOn = localStorage.getItem('sound') !== 'off'; } catch {}
 function updateSoundBtn() { $('soundbtn').textContent = soundOn ? '聲音 開' : '聲音 關'; }
 updateSoundBtn();
+
+// 自動攻擊：站在 BOSS 射程內會自動普攻（伺服器判斷）；預設開，可以關掉自己按
+let autoAtk = true;
+try { autoAtk = localStorage.getItem('autoAtk') !== 'off'; } catch {}
+function updateAutoBtn() {
+  $('autobtn').textContent = autoAtk ? '自動攻擊 開' : '自動攻擊 關';
+  $('autobtn').classList.toggle('off', !autoAtk);
+}
+updateAutoBtn();
+$('autobtn').addEventListener('click', () => {
+  autoAtk = !autoAtk;
+  try { localStorage.setItem('autoAtk', autoAtk ? 'on' : 'off'); } catch {}
+  updateAutoBtn();
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ t: 'auto', on: autoAtk }));
+  toast(autoAtk ? '自動攻擊：靠近 BOSS 就會自動普攻' : '自動攻擊已關閉，按普攻鍵攻擊');
+});
 $('soundbtn').addEventListener('click', () => {
   soundOn = !soundOn;
   try { localStorage.setItem('sound', soundOn ? 'on' : 'off'); } catch {}

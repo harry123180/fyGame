@@ -442,7 +442,7 @@ function join(ws, msg) {
     hp: keep ? prev.hp : c.hp, mp: keep ? prev.mp : c.mp,
     dead: keep ? prev.dead : false, deadUntil: keep ? prev.deadUntil : 0,
     cds: keep ? prev.cds : [0, 0, 0],
-    invulnUntil: 0, tauntUntil: 0, guardUntil: 0, dash: null,
+    invulnUntil: 0, tauntUntil: 0, guardUntil: 0, dash: null, autoAtk: msg.auto !== false,
   };
   applyLevel(p);
   if (!keep) { p.hp = p.maxHp; p.mp = p.maxMp; }
@@ -945,6 +945,17 @@ function sendRank(p) {
   send(p.ws, { t: 'rank', total: top('total'), dmg: top('dmg'), heal: top('heal') });
 }
 
+// ---------- 自動普攻：站在 BOSS 射程內、普攻冷卻好了就自動打（伺服器端判斷，不受網路延遲影響） ----------
+function tickAutoAttack(now) {
+  if (!boss.alive) return;
+  for (const p of players.values()) {
+    if (!p.autoAtk || p.dead || p.dash || now < p.cds[0]) continue;
+    const sk = CLASSES[p.cls].skills[0];
+    const range = sk.kind === 'melee' ? MELEE_RANGE : SHOT_RANGE;
+    if (dist(p, boss) - BOSS.r <= range) useSkill(p, { k: 0 });
+  }
+}
+
 // ---------- 評分回饋：1～5 星、心得、idea ----------
 const FEEDBACK_FILE = path.resolve('data', 'feedback.jsonl');
 function onFeedback(p, msg) {
@@ -984,6 +995,7 @@ wss.on('connection', (ws) => {
     else if (msg.t === 'rank') sendRank(p);
     else if (msg.t === 'ping') onPing(p, msg);
     else if (msg.t === 'feedback') onFeedback(p, msg);
+    else if (msg.t === 'auto') p.autoAtk = !!msg.on;
   });
   ws.on('close', (code) => {
     // 斷線紀錄：用來分辨是心跳逾時（手機在背景）、手機主動關閉、還是網路中斷
@@ -1085,6 +1097,7 @@ setInterval(() => {
   tickXpOrbs(now);
   tickTop3(now);
   tickPowerups(now);
+  tickAutoAttack(now);
 
   // 精簡格式：[id, x, y, hp, mp, flags, ...]；flags：1 倒地、2 無敵、4 嘲諷中、8 減傷
   if (list.length) {
